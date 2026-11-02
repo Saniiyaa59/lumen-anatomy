@@ -1,4 +1,4 @@
-# Lumen — Implementation Plan (v2)
+# Lumen — Implementation Plan
 
 **Lumen: an agentic 3D anatomy tutor.** Students explore a 3D heart, click one or several structures, and talk or type about them ("Why is this wall so thick?", "How does blood get from here to there?"). An AI agent resolves what "this" and "there" mean, then acts directly in the 3D scene — highlighting, isolating, labeling, moving the camera, slicing, animating blood flow, walking through processes step by step — with answers grounded in an open anatomy textbook. It also runs click-based quizzes that remember mistakes, and both the student and the agent can pin notes to structures.
 
