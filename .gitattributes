@@ -1,0 +1,7 @@
+# Store text files with LF in the repo so macOS and Windows diffs stay clean.
+* text=auto eol=lf
+
+*.glb binary
+*.png binary
+*.jpg binary
+*.blend binary
