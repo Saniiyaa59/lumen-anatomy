@@ -131,6 +131,7 @@ class Registry:
         self.views = data.views
         self.cross_sections = data.cross_sections
         self.paths = data.paths
+        self.layers = sorted({s.layer for s in data.structures})
         self._by_id = {s.id: s for s in data.structures}
         self._by_mesh = {mesh: s.id for s in data.structures for mesh in s.mesh_names}
         self._by_name = {normalize_name(name): s.id for s in data.structures for name in s.names()}

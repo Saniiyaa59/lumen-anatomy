@@ -1,0 +1,23 @@
+{
+  "transcript": null,
+  "resolved_refs": [
+    {"word": "these", "start": 8, "structure_ids": ["mitral_valve", "aortic_valve"]}
+  ],
+  "clarification": null,
+  "answer": "The mitral valve has two cusps and sits between the left atrium and left ventricle, held in place by chordae tendineae and papillary muscles. The aortic valve has three semilunar cusps, sits between the left ventricle and the aorta, and needs no chordae. [19.1-p07]",
+  "citations": [
+    {
+      "chunk_id": "19.1-p07",
+      "section": "19.1 Heart Anatomy",
+      "source_url": "https://openstax.org/books/anatomy-and-physiology-2e/pages/19-1-heart-anatomy"
+    }
+  ],
+  "actions": [
+    {"type": "highlight", "structure_ids": ["mitral_valve"], "color": "primary", "exclusive": true},
+    {"type": "highlight", "structure_ids": ["aortic_valve"], "color": "secondary", "exclusive": false},
+    {"type": "fade_others", "structure_ids": ["mitral_valve", "aortic_valve"]},
+    {"type": "label", "structure_id": "mitral_valve", "text": "Mitral: 2 cusps"},
+    {"type": "label", "structure_id": "aortic_valve", "text": "Aortic: 3 cusps"}
+  ],
+  "walkthrough": null
+}

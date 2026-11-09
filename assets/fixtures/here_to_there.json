@@ -1,0 +1,23 @@
+{
+  "transcript": null,
+  "resolved_refs": [
+    {"word": "here", "start": 24, "structure_ids": ["right_atrium"]},
+    {"word": "there", "start": 32, "structure_ids": ["aorta"]}
+  ],
+  "clarification": null,
+  "answer": "Blood leaves the right atrium through the tricuspid valve into the right ventricle, which pumps it through the pulmonary valve to the lungs. It comes back through the pulmonary veins to the left atrium, passes the mitral valve into the left ventricle, and leaves through the aortic valve into the aorta. [19.1-p05]",
+  "citations": [
+    {
+      "chunk_id": "19.1-p05",
+      "section": "19.1 Heart Anatomy",
+      "source_url": "https://openstax.org/books/anatomy-and-physiology-2e/pages/19-1-heart-anatomy"
+    }
+  ],
+  "actions": [
+    {"type": "set_view", "view": "anterior"},
+    {"type": "animate_path", "path": "blood_flow", "from": "right_atrium", "to": "aorta"},
+    {"type": "label", "structure_id": "right_atrium", "text": "Start"},
+    {"type": "label", "structure_id": "aorta", "text": "End"}
+  ],
+  "walkthrough": null
+}
