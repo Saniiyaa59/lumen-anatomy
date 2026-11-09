@@ -24,6 +24,16 @@
 
 The script ([backend/scripts/extract_heart.py](../backend/scripts/extract_heart.py)) holds the list of GLB mesh names and the Z-Anatomy object(s) each is built from. For each object it applies modifiers (subdivision), turns tube curves (all vessels) into meshes, and applies parent transforms. Then it exports only those meshes as binary glTF. Units are meters; the heart itself is ~11 cm tall, ~23 cm with the vessels (the inferior vena cava reaches down to the diaphragm). The frontend centers and scales it.
 
+## Checking the model against the registry
+
+After re-exporting `heart.glb` or editing `assets/structures.json`, run from `backend/` with the venv active:
+
+```bash
+python -m scripts.validate_glb
+```
+
+It lists registry mesh names missing from the GLB and GLB meshes no structure claims, and exits with status 1 if there are any. The test suite runs the same check.
+
 ## What's in the model
 
 | Group | Meshes in heart.glb |
