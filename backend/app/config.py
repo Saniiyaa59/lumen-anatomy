@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=REPO_ROOT / ".env", extra="ignore")
 
     frontend_origin: str = "http://localhost:5173"
+    registry_path: Path = REPO_ROOT / "assets" / "structures.json"
 
 
 settings = Settings()
