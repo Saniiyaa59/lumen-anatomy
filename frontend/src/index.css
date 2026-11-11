@@ -2,6 +2,8 @@
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   color: #e8ecef;
   background: #101418;
+  /* Dark scrollbars and form controls. */
+  color-scheme: dark;
 }
 
 html,
@@ -12,9 +14,189 @@ body,
 }
 
 .app {
-  position: relative;
+  display: flex;
   height: 100%;
   overflow: hidden;
+}
+
+/* The 3D view and everything drawn over it. */
+.stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.stage-corner {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Structure list beside the 3D view; see ui/StructurePanel.tsx. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 250px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+  background: #151a20;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 8px 14px;
+}
+
+.panel-header h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.panel-action,
+.panel-close,
+.panel-expand,
+.eye {
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+}
+
+.panel-action {
+  padding: 3px 8px;
+  color: #8fc1ff;
+}
+
+.panel-action:disabled {
+  color: rgba(232, 236, 239, 0.3);
+  cursor: default;
+}
+
+.panel-close {
+  width: 26px;
+  height: 26px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.panel-action:not(:disabled):hover,
+.panel-close:hover,
+.eye:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.panel-layers,
+.panel-structures {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.panel-layers {
+  flex: 1;
+  padding-bottom: 12px;
+  overflow-y: auto;
+}
+
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px 0 14px;
+}
+
+.panel-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.panel-layer {
+  margin-top: 6px;
+  padding-left: 6px;
+  font-weight: 600;
+}
+
+.panel-expand {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 0;
+  font-weight: inherit;
+  text-align: left;
+}
+
+/* A small triangle that points right when closed and down when open. */
+.panel-chevron {
+  width: 0;
+  height: 0;
+  margin: 0 3px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid rgba(232, 236, 239, 0.6);
+  transition: transform 0.12s;
+}
+
+.panel-expand[aria-expanded='true'] .panel-chevron {
+  transform: rotate(90deg);
+}
+
+.panel-count {
+  font-weight: 400;
+  color: rgba(232, 236, 239, 0.45);
+}
+
+.panel-structures .panel-row {
+  padding-left: 28px;
+}
+
+.panel-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.panel-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-row[data-hidden='true'] .panel-name,
+.panel-row[data-hidden='true'] .panel-swatch {
+  opacity: 0.4;
+}
+
+.eye {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  color: rgba(232, 236, 239, 0.85);
+}
+
+.eye[data-state='hidden'] {
+  color: rgba(232, 236, 239, 0.4);
+}
+
+/* A layer with only some of its structures hidden. */
+.eye[data-state='some'] {
+  color: rgba(232, 236, 239, 0.6);
 }
 
 .viewer {
@@ -27,9 +209,6 @@ body,
 }
 
 .status {
-  position: absolute;
-  top: 12px;
-  left: 12px;
   padding: 4px 10px;
   border-radius: 999px;
   font-size: 13px;
@@ -42,6 +221,227 @@ body,
 
 .status[data-state='down'] {
   color: #ff8a80;
+}
+
+.view-options {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  color: rgba(232, 236, 239, 0.75);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+/* A plain button in the same pill shape, with no switch. */
+.toggle-plain {
+  padding-left: 12px;
+  color: #e8ecef;
+}
+
+.toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.toggle[aria-pressed='true'] {
+  color: #e8ecef;
+}
+
+/* A small switch: the knob slides right and the track lights up when on. */
+.toggle-track {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  transition: background 0.15s;
+}
+
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e8ecef;
+  transition: transform 0.15s;
+}
+
+.toggle[aria-pressed='true'] .toggle-track {
+  background: #4f9cf0;
+}
+
+.toggle[aria-pressed='true'] .toggle-track::after {
+  transform: translateX(12px);
+}
+
+/* Name labels drawn over the 3D view; positioned from viewer/labels.ts. */
+.scene-labels {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.scene-labels svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-labels polyline {
+  fill: none;
+  stroke: #e8ecef;
+  stroke-width: 1;
+}
+
+.scene-labels circle {
+  fill: #e8ecef;
+}
+
+.scene-labels polyline,
+.scene-labels circle,
+.scene-label {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.scene-labels polyline.is-shown,
+.scene-labels circle.is-shown {
+  opacity: 0.3;
+}
+
+.scene-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 1px 2px;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  color: #e8ecef;
+  background: none;
+  cursor: pointer;
+}
+
+.scene-label.is-shown {
+  opacity: 0.55;
+  pointer-events: auto;
+}
+
+.scene-labels .is-emphasized.is-shown {
+  opacity: 1;
+}
+
+.viewer-message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  max-width: 320px;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: rgba(232, 236, 239, 0.8);
+  pointer-events: none;
+}
+
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+  background: rgba(16, 20, 24, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+}
+
+.selection-bar {
+  position: absolute;
+  bottom: 36px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+
+.selection-hint {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(232, 236, 239, 0.6);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: auto;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 5px;
+  border-radius: 999px;
+  font-size: 14px;
+  color: #1c1503;
+  background: #ffc93c;
+}
+
+.chip-order {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffc93c;
+  background: #1c1503;
+}
+
+.chip-remove {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.chip-remove:hover,
+.chip-remove:focus-visible {
+  background: rgba(28, 21, 3, 0.18);
 }
 
 .disclaimer {
