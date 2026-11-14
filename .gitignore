@@ -25,3 +25,6 @@ data/lumen.db
 .idea/
 .DS_Store
 Thumbs.db
+
+# docs
+docs/*.pdf
