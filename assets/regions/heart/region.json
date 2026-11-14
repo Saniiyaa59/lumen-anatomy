@@ -1,0 +1,19 @@
+{
+  "id": "heart",
+  "name": "Heart",
+  "roots": ["Heart.g", "Arteries of heart.g", "Cardiac veins.g"],
+  "extra_objects": [
+    "Ascending aorta",
+    "Aortic arch",
+    "Pulmonary trunk",
+    "Bifurcation of pulmonary trunk",
+    "Right pulmonary artery",
+    "Left pulmonary artery",
+    "Superior vena cava",
+    "Inferior vena cava (thoracic part)",
+    "Right superior pulmonary vein",
+    "Right inferior pulmonary vein",
+    "Left superior pulmonary vein",
+    "Left inferior pulmonary vein"
+  ]
+}

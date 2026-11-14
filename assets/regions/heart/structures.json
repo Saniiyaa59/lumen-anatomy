@@ -1,0 +1,600 @@
+{
+  "region": "heart",
+  "name": "Heart",
+  "source": "Z-Anatomy (Startup.blend), exported by backend/scripts/export_region.py. Do not edit by hand.",
+  "units": "metres",
+  "groups": [
+    {
+      "id": "aorta",
+      "name": "Aorta",
+      "parent": "systemic_arteries",
+      "article": "Aorta"
+    },
+    {
+      "id": "aortic_valve",
+      "name": "Aortic valve",
+      "parent": "root_of_aorta",
+      "article": "Aortic valve"
+    },
+    {
+      "id": "arterial_system",
+      "name": "Arterial system",
+      "parent": null,
+      "article": null
+    },
+    {
+      "id": "arteries_of_heart",
+      "name": "Arteries of heart",
+      "parent": "arterial_system",
+      "article": null
+    },
+    {
+      "id": "cardiac_veins",
+      "name": "Cardiac veins",
+      "parent": "venous_system",
+      "article": "Cardiac veins"
+    },
+    {
+      "id": "heart",
+      "name": "Heart",
+      "parent": "arterial_system",
+      "article": "Heart"
+    },
+    {
+      "id": "left_atrioventricular_valve",
+      "name": "Left atrioventricular valve",
+      "parent": "valvular_complex_of_heart",
+      "article": null
+    },
+    {
+      "id": "pulmonary_arteries",
+      "name": "Pulmonary arteries",
+      "parent": "arterial_system",
+      "article": "Pulmonary arteries"
+    },
+    {
+      "id": "pulmonary_valve",
+      "name": "Pulmonary valve",
+      "parent": "root_of_pulmonary_trunk",
+      "article": "Pulmonary valve"
+    },
+    {
+      "id": "pulmonary_veins",
+      "name": "Pulmonary veins",
+      "parent": "venous_system",
+      "article": "Pulmonary veins"
+    },
+    {
+      "id": "right_atrioventricular_valve",
+      "name": "Right atrioventricular valve",
+      "parent": "valvular_complex_of_heart",
+      "article": "Right atrioventricular valve"
+    },
+    {
+      "id": "root_of_aorta",
+      "name": "Root of aorta",
+      "parent": "valvular_complex_of_heart",
+      "article": "Root of aorta"
+    },
+    {
+      "id": "root_of_pulmonary_trunk",
+      "name": "Root of pulmonary trunk",
+      "parent": "valvular_complex_of_heart",
+      "article": null
+    },
+    {
+      "id": "systemic_arteries",
+      "name": "Systemic arteries",
+      "parent": "arterial_system",
+      "article": "Systemic arteries"
+    },
+    {
+      "id": "systemic_veins",
+      "name": "Systemic veins",
+      "parent": "venous_system",
+      "article": null
+    },
+    {
+      "id": "valvular_complex_of_heart",
+      "name": "Valvular complex of heart",
+      "parent": "heart",
+      "article": "Valvular complex of heart"
+    },
+    {
+      "id": "venous_system",
+      "name": "Venous system",
+      "parent": null,
+      "article": null
+    }
+  ],
+  "structures": [
+    {
+      "id": "unnamed_coronary_sinus",
+      "name": "????????",
+      "side": null,
+      "kind": "tube",
+      "parent": "coronary_sinus",
+      "article": null,
+      "z_anatomy_object": "????????"
+    },
+    {
+      "id": "anterior_interventricular_artery",
+      "name": "Anterior interventricular artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "left_coronary_artery",
+      "article": null,
+      "z_anatomy_object": "Anterior interventricular artery"
+    },
+    {
+      "id": "anterior_papillary_muscle_of_right_ventricle",
+      "name": "Anterior papillary muscle of right ventricle",
+      "side": null,
+      "kind": "surface",
+      "parent": "right_ventricle",
+      "article": null,
+      "z_anatomy_object": "Anterior papillary muscle of right ventricle"
+    },
+    {
+      "id": "anterior_semilunar_leaflet_of_pulmonary_valve",
+      "name": "Anterior semilunar leaflet of pulmonary valve",
+      "side": null,
+      "kind": "surface",
+      "parent": "pulmonary_valve",
+      "article": null,
+      "z_anatomy_object": "Anterior semilunar leaflet of pulmonary valve"
+    },
+    {
+      "id": "aortic_arch",
+      "name": "Aortic arch",
+      "side": null,
+      "kind": "tube",
+      "parent": "aorta",
+      "article": "Aortic arch",
+      "z_anatomy_object": "Aortic arch"
+    },
+    {
+      "id": "ascending_aorta",
+      "name": "Ascending aorta",
+      "side": null,
+      "kind": "tube",
+      "parent": "aorta",
+      "article": "Ascending aorta",
+      "z_anatomy_object": "Ascending aorta"
+    },
+    {
+      "id": "bifurcation_of_pulmonary_trunk",
+      "name": "Bifurcation of pulmonary trunk",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_trunk",
+      "article": "Bifurcation of pulmonary trunk",
+      "z_anatomy_object": "Bifurcation of pulmonary trunk"
+    },
+    {
+      "id": "circumflex_artery_of_heart",
+      "name": "Circumflex artery of heart",
+      "side": null,
+      "kind": "tube",
+      "parent": "left_coronary_artery",
+      "article": "Circumflex artery of heart",
+      "z_anatomy_object": "Circumflex artery of heart"
+    },
+    {
+      "id": "coronary_sinus",
+      "name": "Coronary sinus",
+      "side": null,
+      "kind": "tube",
+      "parent": "cardiac_veins",
+      "article": "Coronary sinus",
+      "z_anatomy_object": "Coronary sinus"
+    },
+    {
+      "id": "great_cardiac_vein",
+      "name": "Great cardiac vein",
+      "side": null,
+      "kind": "tube",
+      "parent": "coronary_sinus",
+      "article": "Great cardiac vein",
+      "z_anatomy_object": "Great cardiac vein"
+    },
+    {
+      "id": "inferior_leaflet_of_right_atrioventricular_valve",
+      "name": "Inferior leaflet of right atrioventricular valve",
+      "side": null,
+      "kind": "surface",
+      "parent": "right_atrioventricular_valve",
+      "article": null,
+      "z_anatomy_object": "Inferior leaflet of right atrioventricular valve"
+    },
+    {
+      "id": "inferior_papillary_muscle_of_left_ventricle",
+      "name": "Inferior papillary muscle of left ventricle",
+      "side": null,
+      "kind": "surface",
+      "parent": "left_ventricle",
+      "article": null,
+      "z_anatomy_object": "Inferior papillary muscle of left ventricle"
+    },
+    {
+      "id": "inferior_papillary_muscle_of_right_ventricle",
+      "name": "Inferior papillary muscle of right ventricle",
+      "side": null,
+      "kind": "surface",
+      "parent": "right_ventricle",
+      "article": null,
+      "z_anatomy_object": "Inferior papillary muscle of right ventricle"
+    },
+    {
+      "id": "inferior_vein_of_left_ventricle",
+      "name": "Inferior vein of left ventricle",
+      "side": null,
+      "kind": "tube",
+      "parent": "coronary_sinus",
+      "article": null,
+      "z_anatomy_object": "Inferior vein of left ventricle"
+    },
+    {
+      "id": "inferior_vein_of_left_ventricle_posterior",
+      "name": "Inferior vein of left ventricle (//Posterior '')",
+      "side": null,
+      "kind": "tube",
+      "parent": "coronary_sinus",
+      "article": null,
+      "z_anatomy_object": "Inferior vein of left ventricle (//Posterior '')"
+    },
+    {
+      "id": "inferior_vena_cava_thoracic_part",
+      "name": "Inferior vena cava (thoracic part)",
+      "side": null,
+      "kind": "tube",
+      "parent": "systemic_veins",
+      "article": "Inferior vena cava (thoracic part)",
+      "z_anatomy_object": "Inferior vena cava (thoracic part)"
+    },
+    {
+      "id": "left_atrium",
+      "name": "Left atrium",
+      "side": null,
+      "kind": "surface",
+      "parent": "heart",
+      "article": "Left atrium",
+      "z_anatomy_object": "Left atrium"
+    },
+    {
+      "id": "left_coronary_artery",
+      "name": "Left coronary artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "arteries_of_heart",
+      "article": "Left coronary artery",
+      "z_anatomy_object": "Left coronary artery"
+    },
+    {
+      "id": "left_coronary_leaflet",
+      "name": "Left coronary leaflet",
+      "side": null,
+      "kind": "surface",
+      "parent": "aortic_valve",
+      "article": "Left coronary leaflet",
+      "z_anatomy_object": "Left coronary leaflet"
+    },
+    {
+      "id": "left_inferior_pulmonary_vein",
+      "name": "Left inferior pulmonary vein",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_veins",
+      "article": null,
+      "z_anatomy_object": "Left inferior pulmonary vein"
+    },
+    {
+      "id": "left_pulmonary_artery",
+      "name": "Left pulmonary artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_arteries",
+      "article": "Left pulmonary artery",
+      "z_anatomy_object": "Left pulmonary artery"
+    },
+    {
+      "id": "left_semilunar_leaflet_of_pulmonary_valve",
+      "name": "Left semilunar leaflet of pulmonary valve",
+      "side": null,
+      "kind": "surface",
+      "parent": "pulmonary_valve",
+      "article": null,
+      "z_anatomy_object": "Left semilunar leaflet of pulmonary valve"
+    },
+    {
+      "id": "left_superior_pulmonary_vein",
+      "name": "Left superior pulmonary vein",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_veins",
+      "article": null,
+      "z_anatomy_object": "Left superior pulmonary vein"
+    },
+    {
+      "id": "left_ventricle",
+      "name": "Left ventricle",
+      "side": null,
+      "kind": "surface",
+      "parent": "heart",
+      "article": "Left ventricle",
+      "z_anatomy_object": "Left ventricle"
+    },
+    {
+      "id": "middle_cardiac_vein",
+      "name": "Middle cardiac vein",
+      "side": null,
+      "kind": "tube",
+      "parent": "coronary_sinus",
+      "article": "Middle cardiac vein",
+      "z_anatomy_object": "Middle cardiac vein"
+    },
+    {
+      "id": "non_coronary_leaflet",
+      "name": "Non-coronary leaflet",
+      "side": null,
+      "kind": "surface",
+      "parent": "aortic_valve",
+      "article": null,
+      "z_anatomy_object": "Non-coronary leaflet"
+    },
+    {
+      "id": "posterior_leaflet_of_left_atrioventricular_valve",
+      "name": "Posterior leaflet of left atrioventricular valve",
+      "side": null,
+      "kind": "surface",
+      "parent": "right_atrioventricular_valve",
+      "article": null,
+      "z_anatomy_object": "Posterior leaflet of left atrioventricular valve"
+    },
+    {
+      "id": "pulmonary_trunk",
+      "name": "Pulmonary trunk",
+      "side": null,
+      "kind": "surface",
+      "parent": "pulmonary_arteries",
+      "article": "Pulmonary trunk",
+      "z_anatomy_object": "Pulmonary trunk"
+    },
+    {
+      "id": "right_atrium",
+      "name": "Right atrium",
+      "side": null,
+      "kind": "surface",
+      "parent": "heart",
+      "article": "Right atrium",
+      "z_anatomy_object": "Right atrium"
+    },
+    {
+      "id": "right_coronary_artery",
+      "name": "Right coronary artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "arteries_of_heart",
+      "article": "Right coronary artery",
+      "z_anatomy_object": "Right coronary artery"
+    },
+    {
+      "id": "right_coronary_leaflet",
+      "name": "Right coronary leaflet",
+      "side": null,
+      "kind": "surface",
+      "parent": "aortic_valve",
+      "article": null,
+      "z_anatomy_object": "Right coronary leaflet"
+    },
+    {
+      "id": "right_inferior_pulmonary_vein",
+      "name": "Right inferior pulmonary vein",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_veins",
+      "article": null,
+      "z_anatomy_object": "Right inferior pulmonary vein"
+    },
+    {
+      "id": "right_inferolateral_branch_of_right_coronary_artery",
+      "name": "Right inferolateral branch of right coronary artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "right_coronary_artery",
+      "article": null,
+      "z_anatomy_object": "Right inferolateral branch of right coronary artery"
+    },
+    {
+      "id": "right_pulmonary_artery",
+      "name": "Right pulmonary artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_arteries",
+      "article": "Right pulmonary artery",
+      "z_anatomy_object": "Right pulmonary artery"
+    },
+    {
+      "id": "right_semilunar_leaflet_of_pulmonary_valve",
+      "name": "Right semilunar leaflet of pulmonary valve",
+      "side": null,
+      "kind": "surface",
+      "parent": "pulmonary_valve",
+      "article": null,
+      "z_anatomy_object": "Right semilunar leaflet of pulmonary valve"
+    },
+    {
+      "id": "right_superior_pulmonary_vein",
+      "name": "Right superior pulmonary vein",
+      "side": null,
+      "kind": "tube",
+      "parent": "pulmonary_veins",
+      "article": null,
+      "z_anatomy_object": "Right superior pulmonary vein"
+    },
+    {
+      "id": "right_ventricle",
+      "name": "Right ventricle",
+      "side": null,
+      "kind": "surface",
+      "parent": "heart",
+      "article": "Right ventricle",
+      "z_anatomy_object": "Right ventricle"
+    },
+    {
+      "id": "septal_branches_of_anterior_interventricular_artery",
+      "name": "Septal branches of anterior interventricular artery",
+      "side": null,
+      "kind": "tube",
+      "parent": "anterior_interventricular_artery",
+      "article": null,
+      "z_anatomy_object": "Septal branches of anterior interventricular artery"
+    },
+    {
+      "id": "septal_leaflet_of_right_atrioventricular_valve",
+      "name": "Septal leaflet of right atrioventricular valve",
+      "side": null,
+      "kind": "surface",
+      "parent": "right_atrioventricular_valve",
+      "article": null,
+      "z_anatomy_object": "Septal leaflet of right atrioventricular valve"
+    },
+    {
+      "id": "septal_papillary_muscle_of_right_ventricle",
+      "name": "Septal papillary muscle of right ventricle",
+      "side": null,
+      "kind": "surface",
+      "parent": "right_ventricle",
+      "article": null,
+      "z_anatomy_object": "Septal papillary muscle of right ventricle"
+    },
+    {
+      "id": "superior_vena_cava",
+      "name": "Superior vena cava",
+      "side": null,
+      "kind": "tube",
+      "parent": "systemic_veins",
+      "article": "Superior vena cava",
+      "z_anatomy_object": "Superior vena cava"
+    }
+  ],
+  "landmarks": [
+    {
+      "id": "anterior_interventricular_sulcus",
+      "name": "Anterior interventricular sulcus",
+      "parent": "heart",
+      "point": [0.10049, 1.27824, 0.09642],
+      "nearest_structure": "left_ventricle",
+      "distance_to_surface": 0.04086,
+      "article": "Anterior interventricular sulcus"
+    },
+    {
+      "id": "anterior_surface_of_heart",
+      "name": "Anterior surface of heart",
+      "parent": "heart",
+      "point": [0.02951, 1.28514, 0.12241],
+      "nearest_structure": "right_ventricle",
+      "distance_to_surface": 0.04128,
+      "article": "Anterior surface of heart"
+    },
+    {
+      "id": "apex_of_heart",
+      "name": "Apex of heart",
+      "parent": "heart",
+      "point": [0.09878, 1.2426, 0.08908],
+      "nearest_structure": "great_cardiac_vein",
+      "distance_to_surface": 0.03732,
+      "article": null
+    },
+    {
+      "id": "base_of_heart",
+      "name": "Base of heart",
+      "parent": "heart",
+      "point": [-0.06601, 1.31904, -0.00136],
+      "nearest_structure": "right_superior_pulmonary_vein",
+      "distance_to_surface": 0.02694,
+      "article": "Base of heart"
+    },
+    {
+      "id": "coronary_sulcus",
+      "name": "Coronary sulcus",
+      "parent": "heart",
+      "point": [-0.02665, 1.29856, 0.08545],
+      "nearest_structure": "right_atrium",
+      "distance_to_surface": 0.02456,
+      "article": "Coronary sulcus"
+    },
+    {
+      "id": "inferior_border_of_heart",
+      "name": "Inferior border of heart",
+      "parent": "heart",
+      "point": [0.03239, 1.23341, 0.03511],
+      "nearest_structure": "middle_cardiac_vein",
+      "distance_to_surface": 0.00781,
+      "article": null
+    },
+    {
+      "id": "inferior_interventricular_sulcus",
+      "name": "Inferior interventricular sulcus",
+      "parent": "heart",
+      "point": [0.03228, 1.22173, 0.03552],
+      "nearest_structure": "left_ventricle",
+      "distance_to_surface": 0.01897,
+      "article": null
+    },
+    {
+      "id": "inferior_surface_of_heart",
+      "name": "Inferior surface of heart",
+      "parent": "heart",
+      "point": [0.0352, 1.22796, 0.02969],
+      "nearest_structure": "left_ventricle",
+      "distance_to_surface": 0.01168,
+      "article": "Inferior surface of heart"
+    },
+    {
+      "id": "interatrial_septum",
+      "name": "Interatrial septum",
+      "parent": "heart",
+      "point": [0.02548, 1.29474, -0.00232],
+      "nearest_structure": "left_ventricle",
+      "distance_to_surface": 0.0057,
+      "article": "Interatrial septum"
+    },
+    {
+      "id": "left_surface_of_heart",
+      "name": "Left surface of heart",
+      "parent": "heart",
+      "point": [-0.06866, 1.28658, 0.03556],
+      "nearest_structure": "right_atrium",
+      "distance_to_surface": 0.03454,
+      "article": null
+    },
+    {
+      "id": "notch_of_cardiac_apex",
+      "name": "Notch of cardiac apex",
+      "parent": "heart",
+      "point": [0.10055, 1.22157, 0.08077],
+      "nearest_structure": "middle_cardiac_vein",
+      "distance_to_surface": 0.04378,
+      "article": "Notch of cardiac apex"
+    },
+    {
+      "id": "right_border_of_heart",
+      "name": "Right border of heart",
+      "parent": "heart",
+      "point": [-0.06005, 1.25981, 0.05629],
+      "nearest_structure": "right_atrium",
+      "distance_to_surface": 0.03548,
+      "article": "Right border of heart"
+    },
+    {
+      "id": "right_surface_of_heart",
+      "name": "Right surface of heart",
+      "parent": "heart",
+      "point": [0.11599, 1.28173, 0.02146],
+      "nearest_structure": "left_ventricle",
+      "distance_to_surface": 0.03553,
+      "article": null
+    }
+  ]
+}

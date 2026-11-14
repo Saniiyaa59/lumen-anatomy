@@ -27,13 +27,11 @@ GLB_MAGIC = b"glTF"
 JSON_CHUNK = b"JSON"
 
 
-def read_glb_mesh_names(path: Path) -> set[str]:
-    """Return the names of the nodes that carry a mesh.
+def read_glb_json(path: Path) -> dict:
+    """Return the scene description of a GLB file.
 
     A GLB file is a 12-byte header, then a JSON chunk describing the scene,
-    then a binary chunk with the geometry. Only the JSON chunk is needed.
-    Node names are used rather than mesh names because Three.js names each
-    loaded object after its node.
+    then a binary chunk with the geometry. Only the JSON chunk is read.
     """
     with path.open("rb") as f:
         magic, version, _length = struct.unpack("<4sII", f.read(12))
@@ -44,7 +42,16 @@ def read_glb_mesh_names(path: Path) -> set[str]:
         chunk_length, chunk_type = struct.unpack("<I4s", f.read(8))
         if chunk_type != JSON_CHUNK:
             raise ValueError(f"{path} does not start with a JSON chunk")
-        gltf = json.loads(f.read(chunk_length))
+        return json.loads(f.read(chunk_length))
+
+
+def read_glb_mesh_names(path: Path) -> set[str]:
+    """Return the names of the nodes that carry a mesh.
+
+    Node names are used rather than mesh names because Three.js names each
+    loaded object after its node.
+    """
+    gltf = read_glb_json(path)
     return {node["name"] for node in gltf.get("nodes", []) if "mesh" in node and "name" in node}
 
 
