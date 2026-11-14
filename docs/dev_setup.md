@@ -60,12 +60,13 @@ Frontend on http://localhost:5173 (from `frontend/`):
 npm run dev
 ```
 
-The page shows a placeholder cube you can rotate and zoom, and a "Backend: connected" badge when both servers are up. In dev builds the scene controller is available in the browser console as `window.lumen`.
+The page shows the 3D heart, which you can rotate, zoom and click, and a "Backend: connected" badge when both servers are up. In dev builds the scene controller is available in the browser console as `window.lumen` and the selection as `window.lumenSelection`. For example, `lumen.setVisibility({ layers: ['chambers'] }, false)` hides the chambers so the valves can be clicked.
 
 ## Tests and checks
 
 ```bash
 cd backend && python -m pytest          # venv active
+cd frontend && npm test
 cd frontend && npm run typecheck
 cd frontend && npm run build
 ```
