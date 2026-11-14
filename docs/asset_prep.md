@@ -24,6 +24,44 @@
 
 The script ([backend/scripts/extract_heart.py](../backend/scripts/extract_heart.py)) holds the list of GLB mesh names and the Z-Anatomy object(s) each is built from. For each object it applies modifiers (subdivision), turns tube curves (all vessels) into meshes, and applies parent transforms. Then it exports only those meshes as binary glTF. Units are meters; the heart itself is ~11 cm tall, ~23 cm with the vessels (the inferior vena cava reaches down to the diaphragm). The frontend centers and scales it.
 
+## Region export (for study sessions)
+
+Added 2026-11-14. The viewer now loads these files. `heart.glb` and `assets/structures.json` above are still read by the backend and `/api/command`. Study sessions need more than shapes, so a second script exports a whole region with nothing written by hand. It reads everything from the atlas.
+
+```bash
+"/c/Program Files/Blender Foundation/Blender 5.2/blender.exe" --background --factory-startup --disable-autoexec "C:/Users/<you>/Downloads/Z-Anatomy/Z-Anatomy/Startup.blend" --python backend/scripts/export_region.py -- assets/regions/heart/region.json --articles assets/text/z_anatomy_articles.jsonl
+```
+
+On macOS, replace the Blender and `.blend` paths as in the command above. `--articles` is optional and only needs running once: it writes the articles for the whole atlas, not for one region.
+
+The only input is `assets/regions/heart/region.json`, which lists Z-Anatomy object names: `roots` (each root and everything under it) and `extra_objects` (that object alone, used for the great vessels so their branches into the lungs and neck stay out). A new region is a new `region.json`.
+
+| Output | What it holds |
+| --- | --- |
+| `assets/regions/heart/model.glb` | One mesh per structure, named by structure id. Same geometry as `heart.glb`, no materials. |
+| `assets/regions/heart/structures.json` | 41 structures, the 17 Z-Anatomy groups above them, and 13 labelled landmarks. Each has an id, the atlas' name, its parent, and the name of its article if it has one. |
+| `assets/regions/heart/centerlines.json` | For each of the 23 vessels, the path down its middle as pieces. Each piece has its points, the tube radius at each point, its length, and where it branches off another piece. |
+| `assets/text/z_anatomy_articles.jsonl` | 3,821 description articles, one per line: `key`, `text`, `source_url`. Entries with identical text carry `same_as` in place of the text. |
+
+Coordinates in the JSON files match the GLB: metres, +Y up. Structure ids are the atlas' names in lower case with underscores, for example `anterior_interventricular_artery`. A group such as the aortic valve is no longer one structure: it is a group whose members are its three leaflets.
+
+Check the export from `backend/` with the venv active (the test suite runs the same check):
+
+```bash
+python -m scripts.validate_region
+```
+
+It fails if a mesh has no structure or the reverse, if a vessel has no centre line, if a centre line does not lie inside its own tube, or if a branch joins nothing.
+
+### What the export found
+
+- **Branches join cleanly.** Of 97 centre-line pieces, 84 start on another piece and 13 are starting points (the great vessels, the coronary sinus, and pulmonary vein stubs that fan out from one point). Both coronary arteries start on the wall of the ascending aorta. Tube surfaces sit within 0.01 mm of the exported radius, apart from where branches meet.
+- **The heart's landmarks do not touch the heart.** All 13 (apex, coronary sulcus, the surfaces and borders) are labels floating 6 to 44 mm away, so they give a name but not a place. `distance_to_surface` records this for each one.
+- **19 of 41 structures have an article under their own name.** The leaflets, papillary muscles, pulmonary veins and smaller branches do not; they fall back to the article of their group or parent. Some articles exist under a different name from the model's (the model's "Anterior interventricular artery" against the article "Left anterior descending artery"), and nothing in the atlas links the two.
+- **Some of what is drawn cannot be seen.** The left coronary artery's 17 mm trunk starts inside the aorta's tube and runs under the right ventricle's surface, so it is hidden from every side unless those are hidden too. The first 46 mm of the anterior interventricular artery is covered by the left atrium and the pulmonary trunk; hiding those two and looking from the left shows all of it. The great cardiac vein runs beside that artery closely enough to be clicked by mistake. Found while playing the sample session (2026-11-14).
+- **Not in the atlas, so not exported:** short names such as "LAD" or "RA" (they appear only inside article text), which structures are neighbours, and a best camera view. The four layers in the Structures panel are replaced by the atlas' own groups.
+- **Atlas quirks kept as they are:** the mitral valve's posterior leaflet is filed under the right atrioventricular valve group; one cardiac vein is named `????????` (exported as `unnamed_coronary_sinus`); the heart's chambers sit under the "Arterial system" group.
+
 ## Checking the model against the registry
 
 After re-exporting `heart.glb` or editing `assets/structures.json`, run from `backend/` with the venv active:
@@ -67,6 +105,31 @@ Z-Anatomy also has these nearby, but they belong to other organs or systems: the
 - **Anterior leaflets of the mitral and tricuspid valves:** missing from Z-Anatomy. The valves still work as clickable structures (one or two leaflets each), but they look incomplete up close.
 - **Pericardium, conducting system, fibrous skeleton, chordae tendineae:** Z-Anatomy has empty collections for these but no meshes.
 - **Materials:** exported, but the chamber colors come out grey; the viewer assigns its own colors per structure anyway.
+- **Smaller coronary branches:** drawn, but not named. See the next section.
+
+## Unnamed coronary branches
+
+Checked in `Startup.blend` on 2026-11-14. Each coronary artery is a curve made of several pieces (splines), so the centre lines and their branching are there. Only six objects carry a name:
+
+| Z-Anatomy object | Curve pieces | Parent object |
+| --- | --- | --- |
+| Right coronary artery | 14 | — |
+| Right inferolateral branch of right coronary artery | 8 | Right coronary artery |
+| Left coronary artery | 1 | — |
+| Anterior interventricular artery | 6 | Left coronary artery |
+| Septal branches of anterior interventricular artery | 6 | Anterior interventricular artery |
+| Circumflex artery of heart | 6 | Left coronary artery |
+
+There is no object for the posterior (inferior) interventricular artery, the marginal branches, the diagonal branches, or the branches to the sinoatrial and atrioventricular nodes. Some of them are probably among the unnamed pieces of the six objects above, but nobody has worked out which piece is which.
+
+**Why it matters:** we can measure a click on these arteries (which piece, how far along it), but we can't grade it against a named place. A case such as "inferior infarct with heart block", where the answer is "the right coronary artery before the branch to the atrioventricular node", can't be graded by exact place until those pieces are named. The heart wall has the same problem: no territories and no separate septum, so there is no region to mark as "lost".
+
+**Idea to come back to (Hanna, Nov 14):** use textbook figures and a vision model to grade exact clicks in places the model leaves unnamed. Two ways to do it:
+
+1. **Name the pieces ahead of time.** Render each unnamed piece on the heart, have the vision model compare it with a textbook figure and propose a name, and have a person confirm. Grading then stays plain code against the named piece. This fits two rules we already have: clicks are graded only against facts checked against the model, and vision work is prepared ahead of the session, never live.
+2. **Judge each click live.** Send a render of the click and the textbook figure to the vision model during the session. No preparation, but slower, and the same click could be graded differently on two tries.
+
+The same approach could apply to any region where the model draws more than it names.
 
 ## Other sources considered
 

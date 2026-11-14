@@ -123,6 +123,8 @@ To show this works beyond one topic, prepare three different topics with the sam
 
 **Not now:** voice, pinned notes, lesson authoring by outside agents.
 
+**Idea to come back to (Nov 14):** the model draws some parts without naming them, such as the smaller coronary branches, so a click there can't be graded by exact place. Textbook figures and a vision model could fill those names in. Details in "Unnamed coronary branches" in `docs/asset_prep.md`.
+
 ## What step 1 needs built
 
 | Piece | Side |

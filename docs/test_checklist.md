@@ -27,10 +27,10 @@ Run through the section for each finished phase before merging.
 - [ ] A chip's × removes only that structure
 - [ ] Esc clears the selection; so does a plain click on empty space
 - [ ] Dragging to rotate never changes the selection
-- [ ] A structure made of several parts lights up as a whole (e.g. all three aortic valve leaflets)
+- [ ] Each valve leaflet is its own structure: clicking one selects that leaflet only
 - [ ] After the chambers are hidden in the structures panel, the valves and papillary muscles can be hovered and clicked
 - [ ] The thin coronary arteries can be clicked after zooming in
-- [ ] `lumenSelection.getState()` in the console lists `selected` in click order and one `clickLog` entry per selected structure
+- [ ] `lumenSelection.getState()` in the console lists `selected` in click order and one `clickLog` entry per selected structure; a click in the 3D view also has `place.point`
 
 ## Recenter
 
@@ -53,12 +53,61 @@ Run through the section for each finished phase before merging.
 
 ## Structures panel
 
-- [ ] The panel on the right lists the four layers, each with its structures nested under it and a color dot matching the 3D model
+- [ ] The Structures list (opened from the top-left button) shows the atlas groups (Heart first), each with its structures under it and a color dot matching the 3D model; a branch is indented under the vessel it comes off
 - [ ] A structure's eye button hides it in the 3D view and dims its row; clicking again shows it
-- [ ] A layer's eye button hides every structure in the layer; clicking again shows them all
-- [ ] With only some of a layer hidden, the layer's eye is dimmed and one click shows the whole layer
+- [ ] A group's eye button hides every structure listed in the group; clicking again shows them all
+- [ ] With only some of a group hidden, the group's eye is dimmed and one click shows the whole group
 - [ ] Hidden structures can't be hovered or clicked in the 3D view, and structures behind them can
 - [ ] "Show all" brings everything back, and is greyed out when nothing is hidden
-- [ ] A layer's name collapses and expands its list
-- [ ] × closes the panel and the 3D view widens to fill the space; the "Structures" button (top right) reopens it with the same items hidden
-- [ ] `lumen.setVisibility({ structureIds: ['aorta'] }, false)` in the console also updates the panel's eye for the aorta
+- [ ] A group's name collapses and expands its list
+- [ ] × closes the list; the "Structures" button reopens it with the same items hidden
+- [ ] `lumen.setVisibility({ structureIds: ['aortic_arch'] }, false)` in the console also updates the panel's eye for the aortic arch
+- [ ] `lumen.setVisibility({ groups: ['cardiac_veins'] }, false)` hides every cardiac vein
+
+## Layout
+
+- [ ] Three areas: a rail on the left (New session, History), the 3D view in the middle, and the session column on the right
+- [ ] With no session open, the right column asks "What do you need to be ready for?", with a suggestion and an input box at the bottom
+- [ ] The rail's top button collapses it to a thin strip and opens it again; the choice survives a reload
+- [ ] "Structures" (top left of the 3D view) opens a compact list over the model and closes it again; its × also closes it
+- [ ] Dragging the border between the 3D view and the session column resizes both; the model redraws as you drag and is never squashed
+- [ ] The session column stops at about 320 px narrow and at 60% of the window wide
+- [ ] Double-clicking the border returns it to the default width; with the border focused, the left and right arrow keys move it
+- [ ] The width survives a reload
+- [ ] After the border is dragged during a session part, the camera re-aims so the part's artery is still in view
+
+## History
+
+- [ ] Starting a session adds it to History with its request and the time
+- [ ] "New session" returns to the start screen and resets the heart; the session stays in History
+- [ ] Clicking a History entry reopens it on the part where it was left, with the slider position and case answers as they were
+- [ ] After a reload the History is still listed and its entries still reopen
+- [ ] Hovering an entry shows a ×, which removes it; removing the open session closes it
+
+## Sample session
+
+- [ ] Clicking the suggestion, or typing anything and pressing Enter, starts the sample: the request appears as a message, then a Plan card, then part 1 as an open card
+- [ ] Part 1 looks down on the heart with the great vessels hidden, and the right coronary artery is tinted
+- [ ] Every statement has a source under it; atlas sources are links that open the article
+- [ ] "Next" and "Back" move between parts; earlier parts stay in the thread as one-line cards, and clicking one reopens it
+- [ ] The input box is greyed out during a session and says asking mid-session isn't built yet
+- [ ] Part 2: a pale pulse runs from the top of the heart down both the anterior interventricular and the circumflex artery, pauses, and repeats
+- [ ] Part 3: dragging the slider moves a pale mark along the artery and greys everything beyond it, branches included; clicking the artery moves the mark there
+- [ ] Part 3: the boxed text under the slider changes when the mark crosses 47 mm
+- [ ] Part 4: labels and the hover name disappear while the case is waiting for a click
+- [ ] Part 4: clicking far down the artery gives "Not quite" with a reason, marks the click in red, and offers "Show me the answer"; the click does not select anything
+- [ ] Part 4: clicking the artery near its start gives "Correct", paints the right stretch green, and the labels come back
+- [ ] Part 4: "Show me the answer" paints the right stretch green without counting as correct
+- [ ] The summary lists the case as "correct on try N" (or "answer shown"), then what was solid, what to look at again, and the sources
+- [ ] Whatever a part hides shows as a crossed-out eye in the Structures panel, and clicking that eye brings the structure back
+- [ ] Reaching the summary resets the heart: everything is shown, nothing is painted or tinted, and the camera glides back to the starting front view
+- [ ] "Finish" or "New session" returns to the start screen and leaves the heart reset in the same way, whichever part was open
+- [ ] During parts 1 to 3, clicking a structure still selects it as usual
+
+## Position on a vessel
+
+- [ ] With no session open, clicking a coronary artery shows a box (bottom left) with its name, the distance from where it begins, which piece (main trunk or a branch) and the distance along that piece
+- [ ] Clicking further along the same artery gives a larger distance; clicking a side branch names a branch, not the main trunk
+- [ ] "Click was … from the centre line" is about the vessel's radius (under 2 mm on a coronary artery)
+- [ ] Clicking a chamber shows the box with the point only and says it is not a vessel
+- [ ] The box is not shown while a session is open
