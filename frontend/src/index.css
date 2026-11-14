@@ -35,15 +35,20 @@ body,
   gap: 8px;
 }
 
-/* Structure list beside the 3D view; see ui/StructurePanel.tsx. */
+/* Structure list: a compact card over the 3D view, opened from the top-left button; see ui/StructurePanel.tsx. */
 .panel {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  z-index: 2;
   display: flex;
   flex-direction: column;
-  flex: none;
-  width: 250px;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  width: 270px;
+  max-height: min(60%, 520px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
   font-size: 13px;
-  background: #151a20;
+  background: rgba(21, 26, 32, 0.96);
 }
 
 .panel-header {
@@ -453,4 +458,40 @@ body,
   font-size: 12px;
   color: rgba(232, 236, 239, 0.6);
   pointer-events: none;
+}
+
+/* Where the last click landed, with test controls for painting a vessel; see ui/PositionReadout.tsx. */
+.readout {
+  position: absolute;
+  /* Above the row of selection chips, which can reach this corner in a narrow window. */
+  bottom: 76px;
+  left: 12px;
+  max-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.75);
+  background: rgba(16, 20, 24, 0.92);
+}
+
+.readout h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8ecef;
+}
+
+.readout p {
+  margin: 2px 0;
+}
+
+.readout .readout-main {
+  font-size: 14px;
+  color: #e8ecef;
+}
+
+.readout .readout-point {
+  margin-top: 6px;
+  color: rgba(232, 236, 239, 0.45);
 }

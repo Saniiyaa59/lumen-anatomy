@@ -30,6 +30,11 @@ export class VisibilityStore {
     this.update(hidden)
   }
 
+  /** Hide exactly these structures and show everything else. */
+  setHidden(structureIds: Iterable<string>): void {
+    this.update(new Set(structureIds))
+  }
+
   toggle(structureId: string): void {
     this.setVisible([structureId], this.state.hidden.has(structureId))
   }

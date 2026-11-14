@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { VisibilityStore } from './store.ts'
 
+it('replaces what is hidden in one step, showing everything else', () => {
+  const store = new VisibilityStore()
+  const listener = vi.fn()
+  store.setVisible(['aorta', 'left_atrium'], false)
+  store.subscribe(listener)
+  store.setHidden(['left_atrium', 'pulmonary_trunk'])
+  expect([...store.getState().hidden].sort()).toEqual(['left_atrium', 'pulmonary_trunk'])
+  expect(listener).toHaveBeenCalledTimes(1)
+})
+
 const hidden = (store: VisibilityStore) => [...store.getState().hidden].sort()
 
 describe('VisibilityStore', () => {

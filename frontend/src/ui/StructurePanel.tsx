@@ -1,13 +1,8 @@
 import { useState } from 'react'
-import { LAYER_NAMES, LAYERS, structures, type Layer } from '../registry.ts'
+import { displayName, sections } from '../registry.ts'
 import { baseColor } from '../viewer/colors.ts'
 import { visibilityStore } from '../visibility/store.ts'
 import { useVisibility } from '../visibility/useVisibility.ts'
-
-const STRUCTURES_BY_LAYER = LAYERS.map((layer) => ({
-  layer,
-  items: structures.filter((structure) => structure.layer === layer),
-}))
 
 function EyeIcon({ open }: { open: boolean }) {
   return (
@@ -20,7 +15,7 @@ function EyeIcon({ open }: { open: boolean }) {
 }
 
 interface EyeButtonProps {
-  /** 'some' is a layer with part of its structures hidden. */
+  /** 'some' is a group with part of its structures hidden. */
   state: 'shown' | 'hidden' | 'some'
   /** What the button acts on, e.g. "Left ventricle" or "all valves". */
   target: string
@@ -41,19 +36,19 @@ interface StructurePanelProps {
   onClose: () => void
 }
 
-/** Lists every structure under its layer, with an eye button to hide or show each one or a whole layer. */
+/** Lists every structure under its atlas group, with an eye button to hide or show each one or a whole group. */
 export default function StructurePanel({ onClose }: StructurePanelProps) {
   const { hidden } = useVisibility()
-  const [expanded, setExpanded] = useState<ReadonlySet<Layer>>(new Set(LAYERS))
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
 
-  const toggleExpanded = (layer: Layer) => {
-    const next = new Set(expanded)
-    if (!next.delete(layer)) next.add(layer)
-    setExpanded(next)
+  const toggleExpanded = (groupId: string) => {
+    const next = new Set(collapsed)
+    if (!next.delete(groupId)) next.add(groupId)
+    setCollapsed(next)
   }
 
   return (
-    <aside className="panel" aria-label="Structures">
+    <aside className="panel" id="structures" aria-label="Structures">
       <header className="panel-header">
         <h2>Structures</h2>
         <button type="button" className="panel-action" disabled={hidden.size === 0} onClick={() => visibilityStore.showAll()}>
@@ -64,38 +59,38 @@ export default function StructurePanel({ onClose }: StructurePanelProps) {
         </button>
       </header>
       <ul className="panel-layers">
-        {STRUCTURES_BY_LAYER.map(({ layer, items }) => {
-          const ids = items.map((structure) => structure.id)
+        {sections.map(({ group, items }) => {
+          const ids = items.map((item) => item.structure.id)
           const hiddenCount = ids.filter((id) => hidden.has(id)).length
-          const layerState = hiddenCount === 0 ? 'shown' : hiddenCount === ids.length ? 'hidden' : 'some'
-          const isExpanded = expanded.has(layer)
+          const groupState = hiddenCount === 0 ? 'shown' : hiddenCount === ids.length ? 'hidden' : 'some'
+          const isExpanded = !collapsed.has(group.id)
           return (
-            <li key={layer}>
+            <li key={group.id}>
               <div className="panel-row panel-layer">
-                <button type="button" className="panel-expand" aria-expanded={isExpanded} onClick={() => toggleExpanded(layer)}>
+                <button type="button" className="panel-expand" aria-expanded={isExpanded} onClick={() => toggleExpanded(group.id)}>
                   <span className="panel-chevron" aria-hidden="true" />
-                  {LAYER_NAMES[layer]}
+                  <span className="panel-name">{group.name}</span>
                   <span className="panel-count">{ids.length}</span>
                 </button>
                 <EyeButton
-                  state={layerState}
-                  target={`all ${LAYER_NAMES[layer].toLowerCase()}`}
-                  onToggle={() => visibilityStore.setVisible(ids, layerState !== 'shown')}
+                  state={groupState}
+                  target={`everything in ${group.name}`}
+                  onToggle={() => visibilityStore.setVisible(ids, groupState !== 'shown')}
                 />
               </div>
               {isExpanded && (
                 <ul className="panel-structures">
-                  {items.map((structure) => {
+                  {items.map(({ structure, depth }) => {
                     const isHidden = hidden.has(structure.id)
+                    const name = displayName(structure.id)
                     return (
-                      <li className="panel-row" data-hidden={isHidden} key={structure.id}>
+                      // A branch is indented under the vessel it comes off.
+                      <li className="panel-row" data-hidden={isHidden} style={{ paddingLeft: 28 + depth * 14 }} key={structure.id}>
                         <span className="panel-swatch" style={{ background: `#${baseColor(structure).toString(16).padStart(6, '0')}` }} aria-hidden="true" />
-                        <span className="panel-name">{structure.display_name}</span>
-                        <EyeButton
-                          state={isHidden ? 'hidden' : 'shown'}
-                          target={structure.display_name}
-                          onToggle={() => visibilityStore.toggle(structure.id)}
-                        />
+                        <span className="panel-name" title={name}>
+                          {name}
+                        </span>
+                        <EyeButton state={isHidden ? 'hidden' : 'shown'} target={name} onToggle={() => visibilityStore.toggle(structure.id)} />
                       </li>
                     )
                   })}
