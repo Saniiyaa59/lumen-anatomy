@@ -139,6 +139,16 @@ export interface RecordedSession extends SessionStart {
   summary: Summary;
 }
 
+/**
+ * A session while it is being played. From the backend the parts arrive one at
+ * a time and the summary last, so there may be fewer parts than plan items and
+ * no summary yet. A recorded session is one where everything has arrived.
+ */
+export interface SessionInPlay extends SessionStart {
+  parts: Part[];
+  summary: Summary | null;
+}
+
 /** What the browser sends after the student answers a click case. */
 export interface Answer {
   part_id: string;
@@ -367,6 +377,14 @@ class Check {
     return id === null || typeof fields.kind !== "string" ? null : { id, kind: fields.kind };
   }
 
+  summary(value: unknown, path: string): void {
+    const fields = this.object(value, path);
+    if (!fields) return;
+    this.texts(fields, "solid", path);
+    this.texts(fields, "shaky", path);
+    this.list(fields, "sources", path).forEach((item, i) => this.source(item, `${path}.sources[${i}]`));
+  }
+
   private clickCase(fields: Fields, path: string): void {
     this.text(fields, "story", path);
     this.text(fields, "question", path);
@@ -410,8 +428,11 @@ class Check {
  * Checks the shape and that every id, piece and distance refers to something
  * real on the loaded model. It cannot check that an atlas article exists (the
  * articles file is not loaded in the browser) or that the anatomy is right.
+ *
+ * With `partial`, the session may still be arriving: plan items need not have
+ * their part yet, and the summary may be null.
  */
-export function checkSession(data: unknown): string[] {
+export function checkSession(data: unknown, { partial = false }: { partial?: boolean } = {}): string[] {
   const check = new Check();
   const session = check.object(data, "session");
   if (!session) return check.problems;
@@ -444,16 +465,35 @@ export function checkSession(data: unknown): string[] {
     check.text(fields, "title", path);
     const partId = check.text(fields, "part_id", path);
     if (partId === null) return;
-    if (!parts.has(partId)) check.fail(`${path}.part_id`, `"${partId}" is not the id of a part`);
-    else if (parts.get(partId) !== fields.kind) check.fail(`${path}.kind`, `must be "${parts.get(partId)}", the kind of part "${partId}"`);
+    if (!parts.has(partId)) {
+      if (!partial) check.fail(`${path}.part_id`, `"${partId}" is not the id of a part`);
+      else if (!PART_KINDS.includes(fields.kind as Part["kind"])) check.fail(`${path}.kind`, `must be one of ${PART_KINDS.join(", ")}`);
+    } else if (parts.get(partId) !== fields.kind) {
+      check.fail(`${path}.kind`, `must be "${parts.get(partId)}", the kind of part "${partId}"`);
+    }
   });
 
-  const summary = check.object(session.summary, "session.summary");
-  if (summary) {
-    check.texts(summary, "solid", "session.summary");
-    check.texts(summary, "shaky", "session.summary");
-    check.list(summary, "sources", "session.summary").forEach((item, i) => check.source(item, `session.summary.sources[${i}]`));
-  }
+  if (!(partial && session.summary === null)) check.summary(session.summary, "session.summary");
+  return check.problems;
+}
+
+/** Everything wrong with the backend's first reply: the start of a session, before any part. */
+export function checkStart(data: unknown): string[] {
+  const fields = typeof data === "object" && data !== null ? data : {};
+  return checkSession({ ...fields, parts: [], summary: null }, { partial: true });
+}
+
+/** Everything wrong with one part as it arrives from the backend. */
+export function checkPart(data: unknown): string[] {
+  const check = new Check();
+  check.part(data, "part");
+  return check.problems;
+}
+
+/** Everything wrong with a summary as it arrives from the backend. */
+export function checkSummary(data: unknown): string[] {
+  const check = new Check();
+  check.summary(data, "summary");
   return check.problems;
 }
 

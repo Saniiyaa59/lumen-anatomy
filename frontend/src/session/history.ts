@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { checkSession } from "./format.ts";
-import { playerStore, type PlayerState, type PlayerStore } from "./player.ts";
+import { IDLE, playerStore, type PlayerState, type PlayerStore } from "./player.ts";
 
 /** One past play-through of a session, as it was left. */
 export interface HistoryEntry {
@@ -52,7 +52,8 @@ export class HistoryStore {
   /** Reopen a past play-through where it was left. */
   open(runId: string): void {
     const entry = this.entries.find((candidate) => candidate.runId === runId);
-    if (entry) this.player.restore(entry.state);
+    // Nothing is in flight for a reopened session, and entries saved by an older version lack newer fields.
+    if (entry) this.player.restore({ ...IDLE, ...entry.state, pending: false, error: null });
   }
 
   /** Forget a play-through. If it is the one on screen, it is closed too. */
@@ -91,7 +92,7 @@ export class HistoryStore {
           typeof entry.request === "string" &&
           typeof entry.startedAt === "number" &&
           entry.state?.runId === entry.runId &&
-          checkSession(entry.state.session).length === 0,
+          checkSession(entry.state.session, { partial: true }).length === 0,
       );
     } catch {
       return [];

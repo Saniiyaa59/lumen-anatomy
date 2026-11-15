@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ClickPlace } from "../selection/store.ts";
-import type { Answer, Part, RecordedSession, Statement } from "./format.ts";
+import type { Answer, Part, PlanItem, SessionInPlay, Statement, Summary } from "./format.ts";
 import { grade, type Clicked } from "./grade.ts";
 
 /** How a click case stands for the student. */
@@ -18,7 +18,13 @@ export interface CaseOutcome {
 
 export interface PlayerState {
   /** The session being played, or null when none is. */
-  readonly session: RecordedSession | null;
+  readonly session: SessionInPlay | null;
+  /** True when the parts come from the backend one at a time; false for a recorded session held in full. */
+  readonly live: boolean;
+  /** True while waiting for the backend: starting a session, or fetching the next part or the summary. */
+  readonly pending: boolean;
+  /** What went wrong with the last request to the backend, in words for the student; null when nothing did. */
+  readonly error: string | null;
   /** Identifies this play-through, so it can be kept in the history and reopened. */
   readonly runId: string | null;
   /** When this play-through began, as milliseconds since 1970. */
@@ -35,7 +41,30 @@ export interface PlayerState {
   readonly answers: readonly Answer[];
 }
 
-const IDLE: PlayerState = { session: null, runId: null, startedAt: 0, index: 0, reached: 0, damage: {}, outcomes: {}, answers: [] };
+export const IDLE: PlayerState = {
+  session: null,
+  live: false,
+  pending: false,
+  error: null,
+  runId: null,
+  startedAt: 0,
+  index: 0,
+  reached: 0,
+  damage: {},
+  outcomes: {},
+  answers: [],
+};
+
+/**
+ * What has to be fetched before the student can move on from the part on
+ * screen: the next part, the summary, or nothing because it is already here.
+ */
+export function nextNeeds(state: PlayerState): "part" | "summary" | null {
+  const { session, index } = state;
+  if (!session) return null;
+  if (index + 1 < session.plan.length) return index + 1 < session.parts.length ? null : "part";
+  return session.summary === null ? "summary" : null;
+}
 
 /** The part on screen, or null when no session is playing or the summary is showing. */
 export function currentPart(state: PlayerState): Part | null {
@@ -75,11 +104,39 @@ export class PlayerStore {
 
   readonly getState = (): PlayerState => this.state;
 
-  /** Begin a session at its first part. */
-  start(session: RecordedSession): void {
+  /** Begin a session at its first part. A live session may start with no parts yet. */
+  start(session: SessionInPlay, live = false): void {
     this.shownAt = this.now();
     const startedAt = Date.now();
-    this.update({ ...IDLE, session, startedAt, runId: `${session.session_id}-${startedAt.toString(36)}` });
+    this.update({ ...IDLE, session, live, startedAt, runId: `${session.session_id}-${startedAt.toString(36)}` });
+  }
+
+  /** Add a part that has arrived from the backend. A part already held is ignored. */
+  addPart(part: Part): void {
+    const { session } = this.state;
+    if (!session || session.parts.some((held) => held.id === part.id)) return;
+    if (session.parts.length === 0) this.shownAt = this.now();
+    this.update({ ...this.state, session: { ...session, parts: [...session.parts, part] } });
+  }
+
+  /** Replace the plan, when the backend sends a changed one. */
+  setPlan(plan: PlanItem[]): void {
+    const { session } = this.state;
+    if (session) this.update({ ...this.state, session: { ...session, plan } });
+  }
+
+  /** Add the summary, once the backend has sent it. */
+  setSummary(summary: Summary): void {
+    const { session } = this.state;
+    if (session) this.update({ ...this.state, session: { ...session, summary } });
+  }
+
+  setPending(pending: boolean): void {
+    if (pending !== this.state.pending) this.update({ ...this.state, pending });
+  }
+
+  setError(error: string | null): void {
+    if (error !== this.state.error) this.update({ ...this.state, error });
   }
 
   /** Reopen a play-through exactly as it was left, e.g. from the history. */
@@ -88,9 +145,9 @@ export class PlayerStore {
     this.update(saved);
   }
 
-  /** Stop playing. The 3D view goes back to how the student left it. */
+  /** Stop playing and clear any error. The heart is reset. */
   close(): void {
-    if (this.state.session) this.update(IDLE);
+    if (this.state !== IDLE) this.update(IDLE);
   }
 
   next(): void {
@@ -101,11 +158,17 @@ export class PlayerStore {
     this.goTo(this.state.index - 1);
   }
 
-  /** Jump to a part by index. One past the last part is the summary. */
+  /**
+   * Jump to a part by index. One past the last part is the summary. Only what
+   * has arrived can be shown: the summary needs every part and the summary itself.
+   */
   goTo(index: number): void {
     const { session } = this.state;
     if (!session) return;
-    const clamped = Math.max(0, Math.min(session.parts.length, index));
+    const total = session.plan.length;
+    const complete = session.parts.length >= total && session.summary !== null;
+    const last = complete ? total : Math.max(0, session.parts.length - 1);
+    const clamped = Math.max(0, Math.min(last, index));
     if (clamped === this.state.index) return;
     this.shownAt = this.now();
     this.update({ ...this.state, index: clamped, reached: Math.max(this.state.reached, clamped) });

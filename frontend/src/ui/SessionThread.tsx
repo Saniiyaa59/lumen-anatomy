@@ -1,9 +1,11 @@
 import "../session/session.css";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import sampleSession from "../../../assets/fixtures/sessions/coronary_arteries.json";
+import { getTutorSource } from "../api.ts";
 import { selectionStore } from "../selection/store.ts";
 import { parseSession, type ClickCase, type DamageSlider, type Part, type Source, type Statement } from "../session/format.ts";
 import { inTarget } from "../session/grade.ts";
+import { liveSessions } from "../session/live.ts";
 import { caseIsOpen, playerStore, usePlayer, type CaseOutcome, type PlayerState } from "../session/player.ts";
 
 const KIND_NAMES: Record<Part["kind"], string> = {
@@ -15,8 +17,17 @@ const KIND_NAMES: Record<Part["kind"], string> = {
 
 const mm = (metres: number) => `${Math.round(metres * 1000)} mm`;
 
-/** Start the hand-written sample. Until the tutor is connected, every new session is this one. */
-export function startSampleSession(): void {
+/** What the suggestion on the start screen asks for. */
+const SUGGESTION = "Prepare me on the blood supply of the heart";
+
+/** Ask the backend for a session on what the student typed, with their notes if they attached any. */
+function startSession(request: string, notes: File | null): void {
+  selectionStore.clear();
+  void liveSessions.start(request, notes);
+}
+
+/** Play the sample held in the app itself, with no backend. The way out when the backend can't be reached. */
+function startBuiltInSample(): void {
   selectionStore.clear();
   playerStore.start(parseSession(sampleSession));
 }
@@ -151,6 +162,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
 
 function SummaryCard({ state }: { state: PlayerState }) {
   const session = state.session!;
+  const summary = session.summary!;
   const cases = session.parts.filter((part) => part.kind === "click_case");
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -173,19 +185,19 @@ function SummaryCard({ state }: { state: PlayerState }) {
       )}
       <h4>Solid</h4>
       <ul className="thread-list">
-        {session.summary.solid.map((line) => (
+        {summary.solid.map((line) => (
           <li key={line}>{line}</li>
         ))}
       </ul>
       <h4>Worth another look</h4>
       <ul className="thread-list">
-        {session.summary.shaky.map((line) => (
+        {summary.shaky.map((line) => (
           <li key={line}>{line}</li>
         ))}
       </ul>
       <h4>Sources used</h4>
       <ul className="thread-list thread-sources">
-        {session.summary.sources.map((source, index) => (
+        {summary.sources.map((source, index) => (
           <li key={index}>
             <SourceTag source={source} />
           </li>
@@ -195,51 +207,111 @@ function SummaryCard({ state }: { state: PlayerState }) {
   );
 }
 
-/** The box at the bottom of the thread. For now it can only start the sample session. */
-function Composer({ inSession }: { inSession: boolean }) {
+/** The box at the bottom of the thread: say what you need, and attach your notes as a PDF. */
+function Composer({ inSession, busy }: { inSession: boolean; busy: boolean }) {
   const [text, setText] = useState("");
+  const [notes, setNotes] = useState<File | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const blocked = inSession || busy;
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (inSession) return;
+    const request = text.trim();
+    if (blocked || request === "") return;
+    startSession(request, notes);
     setText("");
-    startSampleSession();
+    setNotes(null);
   };
+  const pick = (event: ChangeEvent<HTMLInputElement>) => {
+    setNotes(event.target.files?.[0] ?? null);
+    // Clear the picker so choosing the same file again still counts as a change.
+    event.target.value = "";
+  };
+
   return (
     <form className="composer" onSubmit={submit}>
-      <button type="button" className="composer-icon" disabled title="Attaching notes arrives with the backend" aria-label="Attach notes">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-          <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.8 1.8 0 0 1-2.6-2.6l8.1-8.1" />
-        </svg>
-      </button>
-      <input
-        type="text"
-        value={text}
-        disabled={inSession}
-        onChange={(event) => setText(event.target.value)}
-        placeholder={inSession ? "Asking mid-session isn't built yet" : "What do you need to be ready for?"}
-        aria-label={inSession ? "Ask a question" : "What do you need to be ready for?"}
-      />
-      <button type="submit" className="composer-send" disabled={inSession} aria-label="Start">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 19V5M5 12l7-7 7 7" />
-        </svg>
-      </button>
+      {notes && (
+        <p className="composer-file">
+          <span>{notes.name}</span>
+          <button type="button" aria-label={`Remove ${notes.name}`} title="Remove" onClick={() => setNotes(null)}>
+            ×
+          </button>
+        </p>
+      )}
+      <div className="composer-row">
+        <input type="file" accept="application/pdf,.pdf" hidden ref={picker} onChange={pick} />
+        <button
+          type="button"
+          className="composer-icon"
+          disabled={blocked}
+          title="Attach your notes as a PDF"
+          aria-label="Attach your notes as a PDF"
+          onClick={() => picker.current?.click()}
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.8 1.8 0 0 1-2.6-2.6l8.1-8.1" />
+          </svg>
+        </button>
+        <input
+          type="text"
+          value={text}
+          disabled={blocked}
+          onChange={(event) => setText(event.target.value)}
+          placeholder={inSession ? "Asking mid-session isn't built yet" : "What do you need to be ready for?"}
+          aria-label={inSession ? "Ask a question" : "What do you need to be ready for?"}
+        />
+        <button type="submit" className="composer-send" disabled={blocked || text.trim() === ""} aria-label="Start the session">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7" />
+          </svg>
+        </button>
+      </div>
     </form>
   );
 }
 
 /** Shown before any session: what the tutor does and how to begin. */
-function StartScreen() {
+function StartScreen({ state }: { state: PlayerState }) {
+  // Whether the backend builds sessions with Claude or hands out its sample; unknown until it answers.
+  const [source, setSource] = useState<"sample" | "agent" | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getTutorSource().then(
+      (found) => !cancelled && setSource(found),
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   return (
     <div className="thread-start">
       <h2>What do you need to be ready for?</h2>
       <p>Tell the tutor a topic. It builds a study session on the model: it shows, asks you to click where, and explains from your notes and the atlas.</p>
-      <button type="button" className="thread-suggestion" onClick={startSampleSession}>
+      <button type="button" className="thread-suggestion" disabled={state.pending} onClick={() => startSession(SUGGESTION, null)}>
         Blood supply of the heart
       </button>
-      <p className="thread-hint">
-        The tutor isn't connected yet. Whatever you type, this plays one hand-written sample session on the coronary arteries.
-      </p>
+      {state.pending && (
+        <p className="thread-status" role="status">
+          {source === "agent" ? "The tutor is reading and planning. This can take a minute…" : "Starting your session…"}
+        </p>
+      )}
+      {state.error && (
+        <div className="thread-error" role="alert">
+          <p>The session couldn't start. {state.error}</p>
+          <button type="button" className="thread-link" onClick={startBuiltInSample}>
+            Play the built-in sample instead
+          </button>
+        </div>
+      )}
+      {source === "agent" ? (
+        <p className="thread-hint">Sessions are built by Claude for what you ask. Starting one takes about a minute and uses API credit.</p>
+      ) : (
+        <p className="thread-hint">
+          The tutor is switched off. Whatever you ask, the backend replies with one hand-written sample session on the coronary arteries, and it doesn't read
+          your notes.
+        </p>
+      )}
     </div>
   );
 }
@@ -258,22 +330,26 @@ export default function SessionThread() {
     return (
       <aside className="thread" aria-label="Study session">
         <div className="thread-scroll">
-          <StartScreen />
+          <StartScreen state={state} />
         </div>
-        <Composer inSession={false} />
+        <Composer inSession={false} busy={state.pending} />
       </aside>
     );
   }
 
-  const atSummary = index >= session.parts.length;
-  const reachedSummary = state.reached >= session.parts.length;
+  const total = session.plan.length;
+  const atSummary = index >= total;
+  const reachedSummary = state.reached >= total && session.summary !== null;
   const shown = session.parts.slice(0, Math.min(state.reached, session.parts.length - 1) + 1);
+  const next = () => void liveSessions.advance();
 
   return (
     <aside className="thread" aria-label="Study session">
       <header className="thread-header">
         <h2>{session.request}</h2>
-        <p>{atSummary ? "Summary" : `Part ${index + 1} of ${session.parts.length}`}</p>
+        <p>
+          {atSummary ? "Summary" : `Part ${Math.min(index + 1, total)} of ${total}`} · {state.live ? "from the backend" : "built-in sample"}
+        </p>
       </header>
 
       <div className="thread-scroll">
@@ -312,14 +388,24 @@ export default function SessionThread() {
           (atSummary ? (
             <SummaryCard state={state} />
           ) : (
-            <button type="button" className="thread-card thread-card-closed" onClick={() => playerStore.goTo(session.parts.length)}>
+            <button type="button" className="thread-card thread-card-closed" onClick={() => playerStore.goTo(total)}>
               <span className="thread-card-title">Summary</span>
             </button>
           ))}
+        {state.pending && (
+          <p className="thread-status" role="status">
+            {session.parts.length === 0 ? "Preparing the first part…" : "Preparing what comes next…"}
+          </p>
+        )}
+        {state.error && (
+          <div className="thread-error" role="alert">
+            <p>{state.error}</p>
+          </div>
+        )}
       </div>
 
       <nav className="thread-nav" aria-label="Move through the session">
-        <button type="button" disabled={index === 0} onClick={() => playerStore.back()}>
+        <button type="button" disabled={index === 0 || state.pending} onClick={() => playerStore.back()}>
           Back
         </button>
         {atSummary ? (
@@ -327,12 +413,12 @@ export default function SessionThread() {
             Finish
           </button>
         ) : (
-          <button type="button" className={waiting ? undefined : "thread-primary"} onClick={() => playerStore.next()}>
-            {waiting ? "Skip" : index === session.parts.length - 1 ? "See the summary" : "Next"}
+          <button type="button" className={waiting ? undefined : "thread-primary"} disabled={state.pending} onClick={next}>
+            {state.pending ? "Loading…" : state.error ? "Try again" : waiting ? "Skip" : index === total - 1 ? "See the summary" : "Next"}
           </button>
         )}
       </nav>
-      <Composer inSession />
+      <Composer inSession busy={state.pending} />
     </aside>
   );
 }
