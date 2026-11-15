@@ -17,95 +17,20 @@ import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
 from app.config import REPO_ROOT
+from app.region import ID_PATTERN, CenterlinesFile, Point, StructuresFile
 from scripts.validate_glb import read_glb_json
 
 DEFAULT_REGION = REPO_ROOT / "assets" / "regions" / "heart"
 DEFAULT_ARTICLES = REPO_ROOT / "assets" / "text" / "z_anatomy_articles.jsonl"
 
-ID_PATTERN = r"^[a-z][a-z0-9_]*$"
 TOLERANCE = 0.001  # metres
 ON_SURFACE = 0.002  # metres; a landmark this close to a structure counts as touching it
 
-Point = tuple[float, float, float]
-
-
-class Group(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=ID_PATTERN)
-    name: str
-    parent: str | None
-    article: str | None
-
-
-class Structure(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=ID_PATTERN)
-    name: str
-    side: Literal["left", "right"] | None
-    kind: Literal["surface", "tube"]
-    parent: str | None
-    article: str | None
-    z_anatomy_object: str
-
-
-class Landmark(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=ID_PATTERN)
-    name: str
-    parent: str | None
-    point: Point
-    nearest_structure: str | None
-    distance_to_surface: float | None
-    article: str | None
-
-
-class StructuresFile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    region: str
-    name: str
-    source: str
-    units: Literal["metres"]
-    groups: list[Group]
-    structures: list[Structure] = Field(min_length=1)
-    landmarks: list[Landmark]
-
-
-class Attach(BaseModel):
-    """Where a piece branches off another: which piece, how far along it, and how far from its path."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    piece: str
-    at: float
-    gap: float
-
-
-class Piece(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    length: float
-    attach: Attach | None
-    radius: list[float]
-    points: list[Point]
-
-
-class CenterlinesFile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    region: str
-    source: str
-    units: Literal["metres"]
-    structures: dict[str, list[Piece]]
+__all__ = ["ID_PATTERN", "CenterlinesFile", "StructuresFile"]
 
 
 @dataclass
