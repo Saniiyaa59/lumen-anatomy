@@ -10,6 +10,7 @@ is in front of what), because that needs the geometry library and a moment to
 build its search tree.
 """
 
+import threading
 from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Literal
@@ -130,6 +131,9 @@ class Shapes:
         self.whole = trimesh.util.concatenate([self.meshes[structure_id] for structure_id in structure_ids])
         # owner[i] is the index into `ids` of the structure that triangle i belongs to.
         self.owner = np.repeat(np.arange(len(structure_ids)), [len(self.meshes[i].faces) for i in structure_ids])
+        # The search tree behind the ray casts must not be used by two threads at once: doing so
+        # raises or crashes the process. Parts are built on background threads, so casts take turns.
+        self._casting = threading.Lock()
 
     def bounds(self, structure_ids: list[str]) -> tuple[np.ndarray, np.ndarray]:
         """The box around these structures: its lowest and highest corner."""
@@ -141,7 +145,8 @@ class Shapes:
         directions = targets - origins
         distances = np.linalg.norm(directions, axis=1)
         directions = directions / distances[:, None]
-        locations, ray, triangle = self.whole.ray.intersects_location(origins, directions, multiple_hits=True)
+        with self._casting:
+            locations, ray, triangle = self.whole.ray.intersects_location(origins, directions, multiple_hits=True)
         met = np.linalg.norm(locations - origins[ray], axis=1)
         result: list[dict[str, float]] = [{} for _ in origins]
         for line, distance, face in zip(ray, met, triangle):
@@ -167,6 +172,8 @@ class Region:
         self.pieces = {piece.id: piece for pieces in centerlines.structures.values() for piece in pieces}
         self._vessel_of = {piece.id: structure_id for structure_id, pieces in centerlines.structures.items() for piece in pieces}
         self._paths: dict[str, Path3] = {}
+        self._loading_shapes = threading.Lock()
+        self._shapes: Shapes | None = None
         # Branches leaving each piece, nearest the start first.
         self.branches: dict[str, list[Piece]] = {}
         for piece in self.pieces.values():
@@ -218,9 +225,13 @@ class Region:
         entries = [*self.groups.values(), *self.structures.values(), *self.landmarks.values()]
         return frozenset(entry.article for entry in entries if entry.article)
 
-    @cached_property
+    @property
     def shapes(self) -> Shapes:
-        return Shapes(self.folder / "model.glb", list(self.structures))
+        """The region's meshes, loaded the first time they are needed. Safe to ask for from several threads."""
+        with self._loading_shapes:
+            if self._shapes is None:
+                self._shapes = Shapes(self.folder / "model.glb", list(self.structures))
+            return self._shapes
 
 
 @lru_cache

@@ -15,6 +15,7 @@ Sessions are held in memory and are lost when the server restarts.
 
 import base64
 import binascii
+import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -50,6 +51,9 @@ SAMPLE_PATH = REPO_ROOT / "assets" / "fixtures" / "sessions" / "coronary_arterie
 MAX_NOTES_BYTES = 20 * 1024 * 1024
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+# Shown in the terminal the backend runs in, next to uvicorn's own lines.
+log = logging.getLogger("uvicorn.error")
 
 # Parts are built ahead of the student on these threads.
 _builders = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lumen-build")
@@ -194,8 +198,19 @@ def _read_pdf(data: str) -> bytes:
 
 
 def _agent_failed(error: Exception) -> HTTPException:
-    """Turn a failure of the agent or of Claude into a reply the browser can show."""
-    reason = error.problems[0] if isinstance(error, AgentError) else str(error)
+    """Turn any failure of the agent or of Claude into a reply the browser can show.
+
+    Failures nobody foresaw are caught too. Left alone they become a bare 500,
+    which the browser cannot read from another origin, so the student would be
+    told the backend can't be reached when it is running fine.
+    """
+    if isinstance(error, AgentError):
+        reason = error.problems[0]
+    elif isinstance(error, LLMError):
+        reason = str(error)
+    else:
+        log.exception("The session agent failed in a way that was not foreseen")
+        reason = f"an unexpected error ({type(error).__name__}: {error})"
     return HTTPException(status_code=502, detail=f"The tutor could not do that: {reason}")
 
 
@@ -209,17 +224,17 @@ def start_session(body: StartRequest) -> SessionStart:
     usage = Usage()
 
     if settings.session_source == "agent":
-        agent = make_agent(usage)
-        brief = Brief(request=request)
         try:
+            agent = make_agent(usage)
+            brief = Brief(request=request)
             if body.notes:
                 brief.facts = agent.read_notes(request, body.notes.data, body.notes.filename)
             agent.plan(brief)
-        except (LLMError, AgentError) as error:
+            tutor: Tutor = AgentTutor(agent, brief)
+            tutor.prepare(0)  # start on the first part while the browser shows the plan
+        except Exception as error:
             raise _agent_failed(error) from None
-        tutor: Tutor = AgentTutor(agent, brief)
         scope = brief.scope or Scope(can_show=[], words_only=[])
-        tutor.prepare(0)  # start on the first part while the browser shows the plan
     else:
         sample = load_sample()
         tutor = SampleTutor(sample)
@@ -239,7 +254,7 @@ def next_part(session_id: str) -> NextReply:
     with session.lock:
         try:
             part = session.tutor.next_part(session.answers)
-        except (LLMError, AgentError) as error:
+        except Exception as error:
             raise _agent_failed(error) from None
         if part is not None:
             session.sent.append(part)
@@ -265,7 +280,7 @@ def finish_session(session_id: str) -> Summary:
     with session.lock:
         try:
             summary = session.tutor.summary(session.answers)
-        except (LLMError, AgentError) as error:
+        except Exception as error:
             raise _agent_failed(error) from None
         session.finished = True
         return summary

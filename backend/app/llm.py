@@ -4,12 +4,17 @@ Everything else asks through `LLM.ask`, so tests can pass a stand-in that
 replays scripted replies and no test ever spends money or needs a key.
 """
 
+import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import anthropic
 
 from app.config import settings
+
+# Shown in the terminal the backend runs in, next to uvicorn's own lines.
+log = logging.getLogger("uvicorn.error")
 
 DEFAULT_MODEL = "claude-opus-5-5"
 MAX_TOKENS = 16000
@@ -46,12 +51,35 @@ class LLM(Protocol):
         ...
 
 
+def forget_missing_certificates() -> list[str]:
+    """Drop SSL_CERT_FILE and SSL_CERT_DIR from this process if they point at nothing.
+
+    The HTTP library reads them to find the certificates it trusts and fails
+    outright if the path is not there. Conda sets SSL_CERT_FILE when a shell
+    starts, and in Git Bash on Windows it writes a path that does not exist
+    (`<conda>/ssl/cacert.pem`; the file is in `<conda>/Library/ssl`). Without
+    the variable the library uses the certificates the system trusts, which is
+    what it does anyway on a machine where the variable was never set.
+
+    Returns the names it dropped.
+    """
+    dropped = []
+    for name, is_there in (("SSL_CERT_FILE", os.path.isfile), ("SSL_CERT_DIR", os.path.isdir)):
+        path = os.environ.get(name)
+        if path and not is_there(path):
+            del os.environ[name]
+            log.warning("%s points at %s, which does not exist. Ignoring it and using the system's certificates.", name, path)
+            dropped.append(name)
+    return dropped
+
+
 class ClaudeLLM:
     """Claude through the Anthropic SDK."""
 
     def __init__(self, model: str | None = None, effort: str | None = None, api_key: str | None = None):
         self.model = model or settings.llm_model or DEFAULT_MODEL
         self.effort = effort or settings.llm_effort or "high"
+        forget_missing_certificates()
         # The key lives in the repo's .env, which is read into settings but not into
         # the process environment, so it is handed over here. With none, the SDK
         # falls back to its own lookup (environment, then an `ant auth login` profile).

@@ -534,6 +534,26 @@ def test_a_failure_of_claude_at_the_start_is_reported_in_words(scripted_sessions
     assert response.json()["detail"] == "The tutor could not do that: The Anthropic API key was not accepted. Check ANTHROPIC_API_KEY in .env."
 
 
+def test_a_failure_nobody_foresaw_still_reaches_the_browser_with_a_reason(scripted_sessions):
+    """A bare 500 cannot be read by the browser, which then reports that the backend can't be reached."""
+    scripted_sessions(submit_plan=[RuntimeError("the sky fell")])
+    response = client.post("/api/sessions", json={"request": "x"})
+    assert response.status_code == 502
+    assert response.json()["detail"] == "The tutor could not do that: an unexpected error (RuntimeError: the sky fell)"
+
+
+def test_a_failure_while_building_a_part_is_reported_and_the_next_try_builds_it(scripted_sessions):
+    scripted_sessions(
+        submit_plan=[reply(call("submit_plan", **PLAN))],
+        submit_demonstration=[RuntimeError("the sky fell"), reply(call("submit_demonstration", **demo_draft()))],
+        submit_click_case=[reply(call("submit_click_case", **case_draft()))],
+    )
+    session_id = client.post("/api/sessions", json={"request": "x"}).json()["session_id"]
+    failed = client.post(f"/api/sessions/{session_id}/next")
+    assert failed.status_code == 502 and "RuntimeError" in failed.json()["detail"]
+    assert client.post(f"/api/sessions/{session_id}/next").json()["part"]["kind"] == "demonstration"
+
+
 def test_the_app_can_ask_where_sessions_come_from(monkeypatch):
     assert client.get("/api/tutor").json() == {"source": "sample"}
     monkeypatch.setattr(sessions.settings, "session_source", "agent")

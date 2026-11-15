@@ -224,6 +224,20 @@ def test_whole_structures_can_be_looked_for_too():
     assert view(opened, "superior").visible > view(covered, "superior").visible
 
 
+def test_several_threads_can_ask_what_hides_something_at_once():
+    """Parts are built on background threads. The search tree behind the ray casts is not safe to
+    share, so casts must take turns; without that this raised or crashed the process."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def ask(_):
+        return measure.what_hides(region, stretches=PROXIMAL_LAD).model_dump()
+
+    expected = ask(None)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(ask, range(24)))
+    assert all(result == expected for result in results)
+
+
 def test_blockers_are_listed_most_blocking_first_with_their_names():
     blockers = view(measure.what_hides(region, stretches=PROXIMAL_LAD, sides=["left"]), "left").blockers
     assert [b.share for b in blockers] == sorted((b.share for b in blockers), reverse=True)
