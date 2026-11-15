@@ -37,12 +37,36 @@ Then install:
 python -m pip install -r requirements-dev.txt
 ```
 
+Run this again after pulling a change to `requirements.txt`. The geometry packages (`numpy`, `rtree`, `trimesh`) were added on 2026-11-14; without them the backend still starts, but the tests that ask what can be seen fail.
+
 Frontend:
 
 ```bash
 cd frontend
 npm install
 ```
+
+## The session agent
+
+Study sessions come from the hand-written sample unless the agent is switched on. The sample is free and needs no key.
+
+To have Claude build sessions, set these in the repo-root `.env` and restart the backend:
+
+```bash
+ANTHROPIC_API_KEY=...      # never commit this
+SESSION_SOURCE=agent
+```
+
+Every session then costs API credit, including ones started by accident while testing the app, so set `SESSION_SOURCE=sample` again when you are done. `LLM_MODEL` and `LLM_EFFORT` are optional (see `.env.example`).
+
+To run one real session without the app and see what it built and what it used:
+
+```bash
+cd backend
+python -m scripts.try_agent "Prepare me on the blood supply of the heart" --wrong
+```
+
+The tests never call Claude: they replay scripted replies (`backend/tests/test_agent.py`).
 
 ## Running
 

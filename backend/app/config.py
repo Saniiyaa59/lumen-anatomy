@@ -1,6 +1,7 @@
 """Settings loaded from the repo-root .env file (see .env.example)."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,6 +13,12 @@ class Settings(BaseSettings):
 
     frontend_origin: str = "http://localhost:5173"
     registry_path: Path = REPO_ROOT / "assets" / "structures.json"
+
+    # Where a study session's parts come from. "sample" is free; "agent" calls Claude and costs money per session.
+    session_source: Literal["sample", "agent"] = "sample"
+    anthropic_api_key: str | None = None
+    llm_model: str = ""  # empty means the default in app/llm.py
+    llm_effort: str = ""  # low, medium, high, xhigh or max; empty means high
 
 
 settings = Settings()

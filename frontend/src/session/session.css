@@ -1,0 +1,671 @@
+/*
+ * Everything around the 3D view that belongs to study sessions: the rail on
+ * the left (ui/SessionRail.tsx), the draggable border (ui/SplitHandle.tsx) and
+ * the conversation on the right (ui/SessionThread.tsx).
+ */
+
+/* ---- The rail: new session and history ---- */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 4px;
+  width: 220px;
+  padding: 10px 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+  background: #12161b;
+}
+
+.rail[data-collapsed='true'] {
+  width: 52px;
+  align-items: center;
+}
+
+.rail-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.rail-brand {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rail button {
+  border: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+}
+
+.rail-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: rgba(232, 236, 239, 0.75);
+}
+
+.rail-icon:hover,
+.rail-entry:hover,
+.rail-remove:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rail-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  border-radius: 8px;
+  font-weight: 600 !important;
+}
+
+.rail[data-collapsed='true'] .rail-new {
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+}
+
+.rail-new:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rail h2 {
+  margin: 16px 0 4px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(232, 236, 239, 0.5);
+}
+
+.rail-empty,
+.rail-note {
+  margin: 0;
+  padding: 0 10px;
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.45);
+}
+
+.rail-note {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.rail-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.rail-list li {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.rail-list li[data-current='true'] {
+  background: rgba(79, 156, 240, 0.18);
+}
+
+.rail-entry {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  padding: 6px 4px 6px 10px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.rail-entry-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-entry-when {
+  font-size: 11px;
+  color: rgba(232, 236, 239, 0.45);
+}
+
+.rail-remove {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  border-radius: 6px;
+  font-size: 15px !important;
+  line-height: 1;
+  color: rgba(232, 236, 239, 0.5) !important;
+  opacity: 0;
+}
+
+.rail-list li:hover .rail-remove,
+.rail-remove:focus-visible {
+  opacity: 1;
+}
+
+/* ---- The draggable border between the model and the session ---- */
+
+.split-handle {
+  position: relative;
+  flex: none;
+  width: 7px;
+  margin: 0 -3px;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* The visible line is thin; the handle around it is wider so it is easy to grab. */
+.split-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  transition: background 0.12s, width 0.12s, left 0.12s;
+}
+
+.split-handle:hover::after,
+.split-handle:active::after,
+.split-handle:focus-visible::after {
+  left: 2px;
+  width: 3px;
+  background: #4f9cf0;
+}
+
+.split-handle:focus-visible {
+  outline: none;
+}
+
+/* ---- The session as a conversation ---- */
+
+.thread-column {
+  display: flex;
+  flex: none;
+  min-width: 0;
+}
+
+.thread {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  background: #151a20;
+}
+
+.thread h2,
+.thread h3,
+.thread h4,
+.thread p,
+.thread ul,
+.thread ol {
+  margin: 0;
+}
+
+.thread-header {
+  padding: 12px 18px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.thread-header h2 {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-header p {
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.55);
+}
+
+.thread-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+/* What the student asked, on the right like a sent message. */
+.thread-bubble {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 8px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: #2b5f9e;
+}
+
+.thread-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.thread-card-open {
+  padding: 14px 16px;
+}
+
+.thread-card-open[aria-current='step'] {
+  border-color: rgba(79, 156, 240, 0.55);
+  background: rgba(79, 156, 240, 0.06);
+}
+
+/* A part the student has moved on from: one line that reopens it. */
+.thread-card-closed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 14px;
+  font: inherit;
+  text-align: left;
+  color: rgba(232, 236, 239, 0.7);
+  cursor: pointer;
+}
+
+.thread-card-closed:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.thread-card-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.thread-card-note {
+  flex: none;
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.5);
+}
+
+.thread-step {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11px;
+  color: #101418;
+  background: rgba(126, 226, 168, 0.85);
+}
+
+.thread-kind {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8fc1ff;
+}
+
+.thread-card h3 {
+  margin: 2px 0 10px;
+  font-size: 17px;
+}
+
+.thread h4 {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(232, 236, 239, 0.55);
+}
+
+.thread-plan {
+  margin-top: 6px !important;
+  padding-left: 22px;
+}
+
+.thread-plan li {
+  padding: 2px 0;
+  color: rgba(232, 236, 239, 0.75);
+}
+
+.thread-plan li[data-done='true'] {
+  color: rgba(232, 236, 239, 0.45);
+}
+
+.thread-plan li[aria-current='step'] {
+  font-weight: 600;
+  color: #e8ecef;
+}
+
+.thread-scope {
+  margin-top: 8px;
+  font-size: 13px;
+  color: rgba(232, 236, 239, 0.75);
+}
+
+.thread-scope summary {
+  color: #8fc1ff;
+  cursor: pointer;
+}
+
+.thread-list {
+  padding-left: 18px;
+}
+
+.thread-list li {
+  margin-top: 3px;
+}
+
+.thread-sources {
+  padding-left: 0;
+  list-style: none;
+}
+
+/* A sentence or two with its source underneath. */
+.statement {
+  margin-bottom: 12px;
+}
+
+.statement:last-child {
+  margin-bottom: 0;
+}
+
+.source {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.5);
+}
+
+a.source {
+  color: #8fc1ff;
+  text-decoration: none;
+}
+
+a.source:hover {
+  text-decoration: underline;
+}
+
+.thread-task {
+  margin: 4px 0 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* A case's task comes last in its card, so it needs no line under it. */
+.thread-task:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.thread-hint {
+  margin-top: 8px !important;
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.55);
+}
+
+.thread-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thread-slider input {
+  width: 100%;
+  accent-color: #fff3b0;
+}
+
+/* Text that changes as the slider moves. */
+.statement-live {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid #fff3b0;
+  border-radius: 0 6px 6px 0;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.thread-story {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.thread-question {
+  margin-top: 10px !important;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.thread-feedback {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #ff5a5a;
+  border-radius: 0 8px 8px 0;
+  background: rgba(255, 90, 90, 0.1);
+}
+
+.thread-feedback[data-verdict='correct'] {
+  border-color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.thread-feedback[data-verdict='revealed'] {
+  border-color: #8fc1ff;
+  background: rgba(143, 193, 255, 0.1);
+}
+
+.thread-feedback strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.thread-link {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  color: #8fc1ff;
+  background: none;
+  cursor: pointer;
+}
+
+.thread-link:hover {
+  text-decoration: underline;
+}
+
+/* Back and Next, above the input box. */
+.thread-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 18px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.thread-nav button {
+  padding: 6px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  font: inherit;
+  color: #e8ecef;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.thread-nav button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.thread-nav button:disabled {
+  color: rgba(232, 236, 239, 0.3);
+  cursor: default;
+}
+
+.thread-nav .thread-primary {
+  border-color: #4f9cf0;
+  color: #101418;
+  background: #4f9cf0;
+}
+
+.thread-nav .thread-primary:hover:not(:disabled) {
+  background: #6aaef5;
+}
+
+/* Before any session: what the tutor does and how to begin. */
+.thread-start {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 6px;
+}
+
+.thread-start h2 {
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.thread-start > p {
+  color: rgba(232, 236, 239, 0.75);
+}
+
+.thread-suggestion {
+  padding: 7px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  font: inherit;
+  color: #e8ecef;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.thread-suggestion:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* A line saying the backend is being waited on, and a box for what went wrong. */
+.thread-status {
+  font-size: 13px;
+  color: rgba(232, 236, 239, 0.6);
+}
+
+.thread-error {
+  padding: 10px 12px;
+  border-left: 3px solid #ff5a5a;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  background: rgba(255, 90, 90, 0.1);
+}
+
+.thread-error .thread-link {
+  margin-top: 6px;
+}
+
+.thread-suggestion:disabled {
+  color: rgba(232, 236, 239, 0.4);
+  cursor: default;
+}
+
+/* The input box at the bottom of the thread. */
+.composer {
+  margin: 12px 18px 16px;
+  padding: 5px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The attached notes, above the input, with a way to take them off again. */
+.composer-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin: 2px 2px 6px !important;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.composer-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer .composer-file button {
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.composer:focus-within {
+  border-color: #4f9cf0;
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px;
+  border: 0;
+  outline: none;
+  font: inherit;
+  color: #e8ecef;
+  background: none;
+}
+
+.composer input::placeholder {
+  color: rgba(232, 236, 239, 0.45);
+}
+
+.composer button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  color: rgba(232, 236, 239, 0.75);
+  background: none;
+  cursor: pointer;
+}
+
+.composer .composer-send {
+  color: #101418;
+  background: #4f9cf0;
+}
+
+.composer button:disabled {
+  color: rgba(232, 236, 239, 0.3);
+  background: none;
+  cursor: default;
+}

@@ -88,6 +88,22 @@ describe('SelectionStore', () => {
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps where on the structure a click landed, and drops it with the click', () => {
+    const store = makeStore()
+    const place = {
+      point: [0.05, 1.29, 0.06] as [number, number, number],
+      vessel: { structureId: 'right_coronary_artery', pieceId: 'right_coronary_artery.0', along: 0.047, fromStart: 0.047, offset: 0.001 },
+    }
+    store.click('right_coronary_artery', false, place)
+    store.click('left_ventricle', true)
+    expect(store.getState().clickLog).toEqual([
+      { t: 1, structure_id: 'right_coronary_artery', place },
+      { t: 2, structure_id: 'left_ventricle' },
+    ])
+    store.remove('right_coronary_artery')
+    expect(store.getState().clickLog).toEqual([{ t: 2, structure_id: 'left_ventricle' }])
+  })
+
   it('returns a new state object on each change, as useSyncExternalStore needs', () => {
     const store = makeStore()
     const before = store.getState()

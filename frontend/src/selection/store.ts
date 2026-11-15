@@ -1,8 +1,19 @@
+import type { VesselPosition } from '../centerlines.ts'
+
+/** Where on a structure a click landed. Clicks on a label have no place. */
+export interface ClickPlace {
+  /** The exact point hit, in the model's own frame (metres, as in model.glb). */
+  point: [number, number, number]
+  /** For a vessel: which piece of it and how far along. Null for other structures. */
+  vessel: VesselPosition | null
+}
+
 /** One selecting click. Sent to the backend as `click_events`. */
 export interface ClickEvent {
   /** Seconds, from a monotonic clock (`performance.now() / 1000`). */
   t: number
   structure_id: string
+  place?: ClickPlace
 }
 
 export interface SelectionState {
@@ -41,13 +52,14 @@ export class SelectionStore {
    *
    * Plain click: select only that structure (empty space clears).
    * Additive (Shift) click: add the structure, or remove it if already selected.
+   * `place` is where on the structure the click landed, when it is known.
    */
-  click(structureId: string | null, additive: boolean): void {
+  click(structureId: string | null, additive: boolean, place?: ClickPlace): void {
     if (structureId === null) {
       if (!additive) this.clear()
       return
     }
-    const event: ClickEvent = { t: this.now(), structure_id: structureId }
+    const event: ClickEvent = { t: this.now(), structure_id: structureId, ...(place && { place }) }
     if (!additive) {
       this.update({ selected: [structureId], clickLog: [event] })
     } else if (this.state.selected.includes(structureId)) {

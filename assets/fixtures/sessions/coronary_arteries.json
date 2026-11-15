@@ -1,0 +1,223 @@
+{
+  "format": "lumen.session/0.1",
+  "session_id": "sample-coronary-arteries",
+  "region": "heart",
+  "request": "Prepare me on the blood supply of the heart",
+  "scope": {
+    "can_show": [
+      "The course of each coronary artery and its branches",
+      "Where a blockage sits and which branches lie beyond it"
+    ],
+    "words_only": [
+      "Which part of the heart wall each artery supplies: the model has no wall territories",
+      "The smaller named branches (diagonal, marginal, posterior interventricular): the model draws them but does not name them",
+      "The conducting system: the model has no shape for it",
+      "The short trunk of the left coronary artery: the model has it, but it is buried among other shapes"
+    ]
+  },
+  "plan": [
+    { "part_id": "origins", "title": "Where the two coronary arteries start", "kind": "demonstration" },
+    { "part_id": "left-divides", "title": "How the left coronary artery divides", "kind": "pulse" },
+    { "part_id": "block-the-lad", "title": "What a blockage cuts off", "kind": "damage_slider" },
+    { "part_id": "case-septum", "title": "Case: find the blockage", "kind": "click_case" }
+  ],
+  "parts": [
+    {
+      "id": "origins",
+      "kind": "demonstration",
+      "title": "Where the two coronary arteries start",
+      "view": {
+        "look_at": ["left_coronary_artery", "right_coronary_artery", "left_coronary_leaflet", "right_coronary_leaflet"],
+        "side": "superior"
+      },
+      "hide": [
+        "ascending_aorta",
+        "aortic_arch",
+        "pulmonary_trunk",
+        "bifurcation_of_pulmonary_trunk",
+        "left_pulmonary_artery",
+        "right_pulmonary_artery",
+        "superior_vena_cava",
+        "left_atrium"
+      ],
+      "highlight": ["left_coronary_artery", "right_coronary_artery"],
+      "statements": [
+        {
+          "text": "The left coronary artery arises from the aorta above the left cusp of the aortic valve and feeds the left side of the heart muscle.",
+          "source": { "type": "atlas", "article": "Left coronary artery", "url": "https://en.wikipedia.org/wiki/Left_coronary_artery" }
+        },
+        {
+          "text": "The right coronary artery starts above the right cusp of the aortic valve and runs down the right coronary sulcus.",
+          "source": { "type": "atlas", "article": "Right coronary artery", "url": "https://en.wikipedia.org/wiki/Right_coronary_artery" }
+        },
+        {
+          "text": "In this model the left coronary artery is 17 mm long before it divides. That short trunk is buried among the shapes around it, so what you see are its two branches where they emerge.",
+          "source": { "type": "model" }
+        }
+      ]
+    },
+    {
+      "id": "left-divides",
+      "kind": "pulse",
+      "title": "How the left coronary artery divides",
+      "view": {
+        "look_at": ["left_coronary_artery", "anterior_interventricular_artery", "circumflex_artery_of_heart"],
+        "side": "left"
+      },
+      "hide": ["pulmonary_trunk", "left_atrium", "cardiac_veins"],
+      "from": { "piece": "left_coronary_artery.0", "at": 0 },
+      "to": null,
+      "statements": [
+        {
+          "text": "After 10 to 25 mm the left coronary artery divides into the anterior interventricular artery, also called the left anterior descending artery or LAD, and the circumflex artery.",
+          "source": { "type": "atlas", "article": "Left coronary artery", "url": "https://en.wikipedia.org/wiki/Left_coronary_artery" }
+        },
+        {
+          "text": "The circumflex artery curves to the left around the heart in the coronary sulcus.",
+          "source": {
+            "type": "atlas",
+            "article": "Circumflex artery of heart",
+            "url": "https://en.wikipedia.org/wiki/Circumflex_branch_of_left_coronary_artery"
+          }
+        }
+      ]
+    },
+    {
+      "id": "block-the-lad",
+      "kind": "damage_slider",
+      "title": "What a blockage cuts off",
+      "view": { "look_at": ["anterior_interventricular_artery"], "side": "left" },
+      "hide": ["pulmonary_trunk", "left_atrium", "cardiac_veins"],
+      "track": { "piece": "anterior_interventricular_artery.0", "from": 0, "to": 0.1145 },
+      "start_at": 0.08,
+      "statements": [
+        {
+          "text": "The anterior interventricular artery gives off septal branches, which supply the front two thirds of the wall between the ventricles, and diagonal branches, which supply the side wall of the left ventricle.",
+          "source": {
+            "type": "atlas",
+            "article": "Left anterior descending artery",
+            "url": "https://en.wikipedia.org/wiki/Left_anterior_descending_artery"
+          }
+        },
+        {
+          "text": "Its proximal segment runs from its origin to its first septal branch.",
+          "source": {
+            "type": "atlas",
+            "article": "Left anterior descending artery",
+            "url": "https://en.wikipedia.org/wiki/Left_anterior_descending_artery"
+          }
+        },
+        {
+          "text": "Coronary arteries work as end arteries: when one is blocked, the muscle it supplies usually cannot get enough blood from another branch.",
+          "source": { "type": "atlas", "article": "Coronary circulation", "url": "https://en.wikipedia.org/wiki/Coronary_circulation" }
+        }
+      ],
+      "zones": [
+        {
+          "regions": [{ "piece": "anterior_interventricular_artery.0", "from": 0, "to": 0.0465 }],
+          "statement": {
+            "text": "No branch has left the artery yet: in this model the first one leaves at 47 mm. A blockage here cuts off every septal and diagonal branch.",
+            "source": { "type": "model" }
+          }
+        },
+        {
+          "regions": [{ "piece": "anterior_interventricular_artery.0", "from": 0.0465, "to": 0.1145 }],
+          "statement": {
+            "text": "Some branches have already left. They keep their supply, and only what lies beyond the blockage is lost.",
+            "source": { "type": "model" }
+          }
+        }
+      ]
+    },
+    {
+      "id": "case-septum",
+      "kind": "click_case",
+      "title": "Case: find the blockage",
+      "view": {
+        "look_at": ["left_coronary_artery", "anterior_interventricular_artery", "circumflex_artery_of_heart"],
+        "side": "left"
+      },
+      "hide": ["pulmonary_trunk", "left_atrium", "cardiac_veins"],
+      "statements": [],
+      "story": "A 61-year-old man has sudden crushing chest pain. Tests show that the whole front part of the wall between the ventricles has lost its blood supply, along with the tip of the heart. The side and back of the left ventricle are unaffected.",
+      "question": "Click where the blockage is.",
+      "answer": {
+        "regions": [{ "piece": "anterior_interventricular_artery.0", "from": 0, "to": 0.0465 }],
+        "structures": [],
+        "tolerance": 0.002
+      },
+      "feedback": {
+        "correct": {
+          "text": "Right. The septal branches of this artery supply the front two thirds of the wall between the ventricles. Losing all of it puts the blockage before the first septal branch, in the proximal segment.",
+          "source": {
+            "type": "atlas",
+            "article": "Left anterior descending artery",
+            "url": "https://en.wikipedia.org/wiki/Left_anterior_descending_artery"
+          }
+        },
+        "wrong": {
+          "text": "Not there. Find the artery whose septal branches supply the front of the wall between the ventricles, then ask how far up it the blockage must be to cut off all of them.",
+          "source": {
+            "type": "atlas",
+            "article": "Left anterior descending artery",
+            "url": "https://en.wikipedia.org/wiki/Left_anterior_descending_artery"
+          }
+        },
+        "near_misses": [
+          {
+            "regions": [{ "piece": "left_coronary_artery.0", "from": 0, "to": 0.0165 }],
+            "structures": [],
+            "statement": {
+              "text": "Too far up. A blockage here would also cut off the circumflex artery, which supplies the back and side of the left ventricle. Those are unaffected in this patient.",
+              "source": {
+                "type": "atlas",
+                "article": "Circumflex artery of heart",
+                "url": "https://en.wikipedia.org/wiki/Circumflex_branch_of_left_coronary_artery"
+              }
+            }
+          },
+          {
+            "regions": [{ "piece": "anterior_interventricular_artery.0", "from": 0.0465, "to": 0.1145 }],
+            "structures": [],
+            "statement": {
+              "text": "Right artery, but too far along. By here at least one septal branch has already left, so part of the wall between the ventricles would keep its supply.",
+              "source": { "type": "model" }
+            }
+          },
+          {
+            "regions": [],
+            "structures": ["circumflex_artery_of_heart"],
+            "statement": {
+              "text": "The circumflex artery supplies the back and side of the left ventricle, which are unaffected here.",
+              "source": {
+                "type": "atlas",
+                "article": "Circumflex artery of heart",
+                "url": "https://en.wikipedia.org/wiki/Circumflex_branch_of_left_coronary_artery"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "solid": ["Where the two coronary arteries start", "How the left coronary artery divides"],
+    "shaky": ["Placing a blockage from what it cuts off"],
+    "sources": [
+      { "type": "atlas", "article": "Left coronary artery", "url": "https://en.wikipedia.org/wiki/Left_coronary_artery" },
+      { "type": "atlas", "article": "Right coronary artery", "url": "https://en.wikipedia.org/wiki/Right_coronary_artery" },
+      {
+        "type": "atlas",
+        "article": "Circumflex artery of heart",
+        "url": "https://en.wikipedia.org/wiki/Circumflex_branch_of_left_coronary_artery"
+      },
+      {
+        "type": "atlas",
+        "article": "Left anterior descending artery",
+        "url": "https://en.wikipedia.org/wiki/Left_anterior_descending_artery"
+      },
+      { "type": "atlas", "article": "Coronary circulation", "url": "https://en.wikipedia.org/wiki/Coronary_circulation" },
+      { "type": "model" }
+    ]
+  }
+}
