@@ -84,9 +84,37 @@ Run through the section for each finished phase before merging.
 - [ ] After a reload the History is still listed and its entries still reopen
 - [ ] Hovering an entry shows a ×, which removes it; removing the open session closes it
 
+## Sessions through the backend
+
+Run with the backend started.
+
+- [ ] Typing a request and pressing Enter starts a session: what you typed appears as the message and as the title, and the line under the title ends "from the backend"
+- [ ] The paperclip opens a file picker for PDFs; the chosen file's name appears above the input with a × to remove it
+- [ ] "Next" briefly reads "Loading…" while a part is fetched, then the part opens; going Back and Next again does not fetch a part twice
+- [ ] After answering the case, `GET /api/sessions/{id}` (see the API docs page) lists each click with its attempt number and whether it was correct, and the notes' file name
+- [ ] "See the summary" fetches the summary; the backend then reports the session as finished
+- [ ] With the backend stopped, starting a session shows "The session couldn't start" with the reason and "Play the built-in sample instead", which plays the same session marked "built-in sample"
+- [ ] Stopping the backend mid-session, then pressing Next, shows the reason and turns the button into "Try again"; the parts already received stay usable
+- [ ] Reopening a backend session from History after the backend restarted shows what was already received; Next explains that the session is no longer on the server
+
+## Sessions built by the agent
+
+These spend API credit. Set `SESSION_SOURCE=agent` and a key in `.env`, restart the backend, and set it back to `sample` afterwards.
+
+- [ ] The start screen says sessions are built by Claude and take about a minute
+- [ ] Starting a session shows "The tutor is reading and planning", then a plan of three or four parts ending in a case
+- [ ] "What the model can and can't show" lists things specific to the request
+- [ ] Each part opens with what it is about in view; nothing it talks about is hidden behind another structure
+- [ ] Every statement has a source; opening an atlas link shows an article that says what the statement says
+- [ ] With notes attached, some statements read "Your notes: <file>, page N", and that page says so
+- [ ] A case's story does not name the answer, and only one place fits it
+- [ ] Answering a case wrongly once, then pressing Next, sometimes adds a part to the plan that addresses the mistake
+- [ ] The summary's "worth another look" reflects what was actually answered wrongly
+- [ ] `GET /api/sessions/{id}` shows `source: agent`, the number of requests to Claude, the tokens used, and any parts given up on
+
 ## Sample session
 
-- [ ] Clicking the suggestion, or typing anything and pressing Enter, starts the sample: the request appears as a message, then a Plan card, then part 1 as an open card
+- [ ] Starting a session (by the suggestion or by typing) shows the request as a message, then a Plan card, then part 1 as an open card
 - [ ] Part 1 looks down on the heart with the great vessels hidden, and the right coronary artery is tinted
 - [ ] Every statement has a source under it; atlas sources are links that open the article
 - [ ] "Next" and "Back" move between parts; earlier parts stay in the thread as one-line cards, and clicking one reopens it
