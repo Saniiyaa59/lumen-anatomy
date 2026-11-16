@@ -20,5 +20,9 @@ class Settings(BaseSettings):
     llm_model: str = ""  # empty means the default in app/llm.py
     llm_effort: str = ""  # low, medium, high, xhigh or max; empty means high
 
+    # Where study sessions are saved, so they survive a restart, and how many days an untouched one is kept.
+    sessions_db: Path = REPO_ROOT / "data" / "lumen.db"
+    session_days: float = 30
+
 
 settings = Settings()
