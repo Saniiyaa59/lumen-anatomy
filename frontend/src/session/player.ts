@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ClickPlace } from "../selection/store.ts";
-import type { Answer, Part, PlanItem, SessionInPlay, Statement, Summary } from "./format.ts";
+import type { Answer, Part, PlanItem, Question, SessionInPlay, Statement, Summary } from "./format.ts";
 import { grade, type Clicked } from "./grade.ts";
 
 /** How a click case stands for the student. */
@@ -16,7 +16,34 @@ export interface CaseOutcome {
   lastClick: Clicked | null;
 }
 
+/** One line of what the tutor and the student said before the plan. */
+export interface ChatLine {
+  from: "tutor" | "student";
+  text: string;
+}
+
+/** A session whose tutor is waiting for the student to answer a question before it plans. */
+export interface Asking {
+  session_id: string;
+  request: string;
+  /** What has been said so far, oldest first; the last line is the tutor's open question. */
+  chat: ChatLine[];
+  question: Question;
+}
+
+/** Something said during a session, shown in the thread after the part it was said on. */
+export interface SessionMessage {
+  from: "student" | "tutor";
+  /** The student's words; empty for the tutor, whose answer is in `statements`. */
+  text: string;
+  statements: Statement[];
+  /** Index of the part on screen when it was said. */
+  after: number;
+}
+
 export interface PlayerState {
+  /** Set while the tutor waits for an answer before planning; `session` is null until it has planned. */
+  readonly asking: Asking | null;
   /** The session being played, or null when none is. */
   readonly session: SessionInPlay | null;
   /** True when the parts come from the backend one at a time; false for a recorded session held in full. */
@@ -39,9 +66,12 @@ export interface PlayerState {
   readonly outcomes: Readonly<Record<string, CaseOutcome>>;
   /** Every click on a case, oldest first, in the shape sent to the backend. */
   readonly answers: readonly Answer[];
+  /** What the student and the tutor said during the session, oldest first. */
+  readonly messages: readonly SessionMessage[];
 }
 
 export const IDLE: PlayerState = {
+  asking: null,
   session: null,
   live: false,
   pending: false,
@@ -53,6 +83,7 @@ export const IDLE: PlayerState = {
   damage: {},
   outcomes: {},
   answers: [],
+  messages: [],
 };
 
 /**
@@ -129,6 +160,16 @@ export class PlayerStore {
   setSummary(summary: Summary): void {
     const { session } = this.state;
     if (session) this.update({ ...this.state, session: { ...session, summary } });
+  }
+
+  /** Replace what has been said during the session. */
+  setMessages(messages: readonly SessionMessage[]): void {
+    this.update({ ...this.state, messages });
+  }
+
+  /** Show the tutor's question, or clear it. */
+  setAsking(asking: Asking | null): void {
+    this.update({ ...this.state, asking });
   }
 
   setPending(pending: boolean): void {

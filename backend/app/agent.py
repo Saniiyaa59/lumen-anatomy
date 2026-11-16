@@ -15,21 +15,22 @@ tries again. After a few failures the part is given up on.
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal, Sequence
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app import measure
-from app.agent_tools import DECIDE_TOOL, LOOKUP_TOOLS, SUBMIT_PART_TOOLS, SUBMIT_PLAN_TOOL, SUBMIT_SUMMARY_TOOL, run_lookup
+from app.agent_tools import ANSWER_STUDENT_TOOL, ASK_STUDENT_TOOL, DECIDE_TOOL, LOOKUP_TOOLS, SUBMIT_PART_TOOLS, SUBMIT_PLAN_TOOL, SUBMIT_SUMMARY_TOOL, run_lookup
 from app.articles import Articles
 from app.llm import LLM, Usage
 from app.region import Region
 from app.session_check import check_part
-from app.session_schemas import ClickAnswer, ClickCase, DamageSlider, Demonstration, Part, PartKind, Pulse, Scope, Source
+from app.session_schemas import ClickAnswer, ClickCase, DamageSlider, Demonstration, Part, PartKind, Pulse, Scope, Source, Statement
 
 MAX_TURNS = 24  # requests to Claude for one piece of work, lookups included
 MAX_HAND_INS = 4  # times one part may be handed in before it is given up on
 MAX_NOTE_FACTS = 40
+MAX_QUESTIONS = 2  # questions the tutor may ask before it must plan
 MIN_QUOTE_CHARS = 20
 CLICK_TOLERANCE = 0.002  # metres past the end of an answer region that still count
 
@@ -47,7 +48,7 @@ SYSTEM = """You are the tutor inside Lumen, a study tool built on a 3D anatomy m
 - damage_slider: the student drags a blockage along one piece of a vessel; everything beyond it greys out. Text can change as the blockage enters different zones.
 - click_case: a short story about an invented patient, then "click where the problem is". The student answers by clicking the model and is graded by the exact place.
 
-Sessions are built around reasoning, not naming: what follows if this is blocked here, and where must the problem be given these findings.
+The student's request decides what a session covers; the model only decides how it can be shown. Where the topic allows, build around reasoning rather than naming: what follows if this is blocked here, and where must the problem be given these findings.
 
 # The model
 
@@ -104,6 +105,31 @@ class NoteFact:
 
 
 @dataclass
+class Turn:
+    """One line of what the tutor and the student said to each other, before the plan or during the session."""
+
+    who: Literal["tutor", "student"]
+    text: str
+
+
+@dataclass
+class Question:
+    """What the agent wants to ask the student before it can plan."""
+
+    text: str
+    options: list[str]
+
+
+@dataclass
+class ChatAnswer:
+    """The agent's answer to something the student said mid-session."""
+
+    statements: list[Statement]
+    point_to: list[str]  # structures to select on the model
+    new_plan: list["PlannedPart"] | None  # replaces the parts not yet given, when the agent changes direction
+
+
+@dataclass
 class PlannedPart:
     part_id: str
     title: str
@@ -117,6 +143,7 @@ class Brief:
 
     request: str
     facts: list[NoteFact] = field(default_factory=list)
+    conversation: list[Turn] = field(default_factory=list)  # what the tutor and student said, oldest first
     scope: Scope | None = None
     plan: list[PlannedPart] = field(default_factory=list)
     built: list[Part] = field(default_factory=list)  # parts already handed to the student, in order
@@ -129,6 +156,24 @@ def _squash(text: str) -> str:
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32] or "part"
+
+
+def _read_parts(parts: Any, make_id: Callable[[int, str], str]) -> tuple[list["PlannedPart"], list[str]]:
+    """Planned parts from what the agent handed in, with the problems found. `make_id` gives each its part id."""
+    if not isinstance(parts, list) or not 1 <= len(parts) <= 5:
+        return [], ["parts: plan between one and five parts"]
+    planned: list[PlannedPart] = []
+    problems: list[str] = []
+    for index, item in enumerate(parts):
+        kind = item.get("kind") if isinstance(item, dict) else None
+        title = str(item.get("title", "")).strip() if isinstance(item, dict) else ""
+        if kind not in SUBMIT_PART_TOOLS:
+            problems.append(f"parts[{index}].kind: must be one of {', '.join(SUBMIT_PART_TOOLS)}")
+        elif not title:
+            problems.append(f"parts[{index}].title: must not be empty")
+        else:
+            planned.append(PlannedPart(make_id(index, title), title, kind, str(item.get("intent", "")).strip()))
+    return planned, problems
 
 
 class Agent:
@@ -148,9 +193,17 @@ class Agent:
         self.usage.add(getattr(response, "usage", None))
         return response
 
-    def _work(self, task: str, hand_in: dict[str, Any], accept: Callable[[dict], Any]) -> Any:
-        """Let Claude work on a task with the lookup tools until what it hands in is accepted."""
-        tools = [*LOOKUP_TOOLS, hand_in]
+    def _work(
+        self, task: str, hand_in: dict[str, Any], accept: Callable[[dict], Any], also: Sequence[tuple[dict[str, Any], Callable[[dict], Any]]] = ()
+    ) -> Any:
+        """Let Claude work on a task with the lookup tools until what it hands in is accepted.
+
+        `also` offers other ways to finish, each with its own check. The main hand-in
+        stays last in the tool list.
+        """
+        accepts = {hand_in["name"]: accept, **{tool["name"]: check for tool, check in also}}
+        tools = [*LOOKUP_TOOLS, *(tool for tool, _ in also), hand_in]
+        finish = " or ".join(accepts)
         messages: list[dict] = [{"role": "user", "content": task}]
         problems = ["nothing was handed in"]
         hand_ins = 0
@@ -159,15 +212,15 @@ class Agent:
             messages.append({"role": "assistant", "content": response.content})
             calls = [block for block in response.content if block.type == "tool_use"]
             if not calls:
-                messages.append({"role": "user", "content": f"Finish by calling {hand_in['name']}."})
+                messages.append({"role": "user", "content": f"Finish by calling {finish}."})
                 continue
             results = []
             for call in calls:
                 failed = False
-                if call.name == hand_in["name"]:
+                if call.name in accepts:
                     hand_ins += 1
                     try:
-                        return accept(call.input)
+                        return accepts[call.name](call.input)
                     except _Rejected as rejected:
                         problems = rejected.problems
                         content = "Not accepted. Fix these and hand it in again:\n- " + "\n- ".join(problems)
@@ -186,7 +239,11 @@ class Agent:
 
     def _background(self, brief: Brief) -> str:
         """What the session is for and what has happened so far, as text for a task."""
-        lines = [f"The student asked: {brief.request}", ""]
+        lines = [f"The student asked: {brief.request}"]
+        if brief.conversation:
+            lines.append("Then:")
+            lines += [f"- {'You said' if turn.who == 'tutor' else 'The student said'}: {turn.text}" for turn in brief.conversation]
+        lines.append("")
         if brief.facts:
             lines.append("Facts from the student's notes (cite one as source type notes with its number):")
             lines += [f"{fact.number}. {fact.text} (page {fact.page})" for fact in brief.facts]
@@ -238,32 +295,53 @@ class Agent:
 
     # Scope and plan
 
-    def plan(self, brief: Brief) -> None:
-        """Work out what the model can show for this request and plan the parts. Fills `brief.scope` and `brief.plan`."""
+    def plan(self, brief: Brief) -> Question | None:
+        """Plan the session from what the student asked, or ask them something first.
+
+        Fills `brief.scope` and `brief.plan` and returns None, or returns a question
+        for the student and leaves the plan empty. Once MAX_QUESTIONS have been
+        asked, the agent can only plan.
+        """
+        asked = sum(1 for turn in brief.conversation if turn.who == "tutor")
+        may_ask = asked < MAX_QUESTIONS
+        if may_ask:
+            deciding = (
+                "First decide whether you know what to cover. Their words, their replies and their notes decide the topic. "
+                "If they name a topic, or their notes show what it is, plan for that. "
+                "If they don't (for example \"help me with my exam tomorrow\" with no notes), do not guess: ask with ask_student, "
+                "one short question with two to four answers drawn from what this model can show. "
+                "Also ask if their request is something the model can't show at all, offering the nearest things it can.\n\n"
+            )
+        else:
+            deciding = (
+                "You have asked enough questions; plan now from what they have said. "
+                "If you still had to assume something, say what in words_only.\n\n"
+            )
         task = (
-            f"{self._background(brief)}\n\n"
-            "Work out what the model can show for this and what it can only explain, then plan the session: three or four parts that build on each other and end with a click_case. "
+            f"{self._background(brief)}\n\n{deciding}"
+            "Plan two to five parts that build on each other, chosen for this request: what someone revising this topic most needs. "
+            "Pick the kinds that suit the topic. A damage_slider or click_case fits where a blockage teaches something; for other topics, demonstrations and pulses may be all you need. "
             "Look at the structures you intend to use with `describe` and `branches_of` first, so the plan fits what the model has. "
             "Hand the plan in with submit_plan."
         )
 
-        def accept(raw: dict) -> None:
+        def accept_question(raw: dict) -> Question:
+            text = str(raw.get("question", "")).strip()
+            options = [str(option).strip() for option in raw.get("options") or [] if str(option).strip()]
             problems = []
+            if not text:
+                problems.append("question: must not be empty")
+            if len(options) > 4:
+                problems.append("options: give at most four")
+            if problems:
+                raise _Rejected(problems)
+            return Question(text=text, options=options)
+
+        def accept(raw: dict) -> None:
             parts = raw.get("parts")
             if not isinstance(parts, list) or not 2 <= len(parts) <= 5:
                 raise _Rejected(["parts: plan between two and five parts"])
-            planned: list[PlannedPart] = []
-            for index, item in enumerate(parts):
-                kind = item.get("kind") if isinstance(item, dict) else None
-                title = str(item.get("title", "")).strip() if isinstance(item, dict) else ""
-                if kind not in SUBMIT_PART_TOOLS:
-                    problems.append(f"parts[{index}].kind: must be one of {', '.join(SUBMIT_PART_TOOLS)}")
-                elif not title:
-                    problems.append(f"parts[{index}].title: must not be empty")
-                else:
-                    planned.append(PlannedPart(f"p{index + 1}-{_slug(title)}", title, kind, str(item.get("intent", "")).strip()))
-            if not any(item.kind == "click_case" for item in planned):
-                problems.append("parts: include at least one click_case")
+            planned, problems = _read_parts(parts, lambda index, title: f"p{index + 1}-{_slug(title)}")
             try:
                 scope = Scope(can_show=raw.get("can_show") or [], words_only=raw.get("words_only") or [])
             except ValidationError:
@@ -272,7 +350,7 @@ class Agent:
                 raise _Rejected(problems)
             brief.scope, brief.plan = scope, planned
 
-        self._work(task, SUBMIT_PLAN_TOOL, accept)
+        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[(ASK_STUDENT_TOOL, accept_question)] if may_ask else ())
 
     # Building a part
 
@@ -378,6 +456,57 @@ class Agent:
             f"part.view: only {seen.visible:.0%} of {what} can be seen from the {part.view.side} with this hide list. "
             f"In front of it: {blockers}. Hide what is in front, or use what_hides to find a better side."
         ]
+
+    # Talking with the student mid-session
+
+    def chat(self, brief: Brief, text: str, selected: list[str], on_screen: str | None) -> ChatAnswer:
+        """Answer what the student said during the session, and change the rest of the plan if that is called for.
+
+        `selected` is what they have selected on the model; `on_screen` the title of the part they are on.
+        Does not record the exchange in the brief; the caller does, once it has been accepted.
+        """
+        context = []
+        if on_screen:
+            context.append(f'They are on the part "{on_screen}".')
+        if selected:
+            context.append("They have selected on the model: " + ", ".join(f"{self.region.name_of(i)} ({i})" for i in selected) + ".")
+        task = (
+            f"{self._background(brief)}\n\n"
+            + (" ".join(context) + "\n" if context else "")
+            + f"The student says: {text}\n\n"
+            "Answer them with answer_student, briefly and in plain words. Look things up first; every statement needs a source, as in a part. "
+            "If they point at something (\"this\", \"here\"), they mean what they have selected. "
+            "Select structures with point_to when it helps them see what you mean. "
+            "If they ask to go another way (another topic, more practice, skip ahead, something easier), or their question shows the plan no longer fits, "
+            "give new_plan: it replaces every part they have not been given yet. Otherwise leave the plan alone."
+        )
+        changes = sum(1 for turn in brief.conversation if turn.who == "student")
+
+        def accept(raw: dict) -> ChatAnswer:
+            problems: list[str] = []
+            drafts = raw.get("statements")
+            if not isinstance(drafts, list) or not 1 <= len(drafts) <= 4:
+                raise _Rejected(["statements: give one to four"])
+            checked = self._with_sources(brief, drafts, "statements", problems)
+            statements: list[Statement] = []
+            for index, draft in enumerate(checked):
+                try:
+                    statements.append(Statement.model_validate(draft))
+                except ValidationError:
+                    problems.append(f"statements[{index}]: needs non-empty text and a source")
+            point_to = [str(i) for i in raw.get("point_to") or []]
+            problems += [f'point_to: "{i}" is not a structure on this model' for i in point_to if i not in self.region.structures]
+            new_plan = None
+            if raw.get("new_plan"):
+                taken = {item.part_id for item in brief.plan}
+                new_plan, plan_problems = _read_parts(raw["new_plan"], lambda index, title: f"c{changes + 1}-{index + 1}-{_slug(title)}")
+                problems += plan_problems
+                problems += [f"new_plan: part id {item.part_id} is already used" for item in new_plan if item.part_id in taken]
+            if problems:
+                raise _Rejected(problems)
+            return ChatAnswer(statements=statements, point_to=point_to, new_plan=new_plan)
+
+        return self._work(task, ANSWER_STUDENT_TOOL, accept)
 
     # Replanning
 

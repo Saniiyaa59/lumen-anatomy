@@ -1,12 +1,12 @@
 import "../session/session.css";
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import sampleSession from "../../../assets/fixtures/sessions/coronary_arteries.json";
 import { getTutorSource } from "../api.ts";
 import { selectionStore } from "../selection/store.ts";
 import { parseSession, type ClickCase, type DamageSlider, type Part, type Source, type Statement } from "../session/format.ts";
 import { inTarget } from "../session/grade.ts";
 import { liveSessions } from "../session/live.ts";
-import { caseIsOpen, playerStore, usePlayer, type CaseOutcome, type PlayerState } from "../session/player.ts";
+import { caseIsOpen, playerStore, usePlayer, type Asking, type CaseOutcome, type PlayerState, type SessionMessage } from "../session/player.ts";
 
 const KIND_NAMES: Record<Part["kind"], string> = {
   demonstration: "Demonstration",
@@ -207,17 +207,35 @@ function SummaryCard({ state }: { state: PlayerState }) {
   );
 }
 
-/** The box at the bottom of the thread: say what you need, and attach your notes as a PDF. */
-function Composer({ inSession, busy }: { inSession: boolean; busy: boolean }) {
+/** Send what the student typed mid-session, with what they have selected, and select what the answer points to. */
+function sendChat(text: string): void {
+  void liveSessions.chat(text, selectionStore.getState().selected).then((pointTo) => {
+    if (pointTo.length > 0) selectionStore.set(pointTo);
+  });
+}
+
+/**
+ * The box at the bottom of the thread: say what you need, and attach your notes as a PDF.
+ * With `onReply` it sends what is typed there instead (an answer to the tutor, or a
+ * message mid-session), and takes no file. `inSession` without `onReply` means a
+ * session that can't be talked to, such as the built-in sample.
+ */
+function Composer({ inSession, busy, onReply }: { inSession: boolean; busy: boolean; onReply?: (text: string) => void }) {
   const [text, setText] = useState("");
   const [notes, setNotes] = useState<File | null>(null);
   const picker = useRef<HTMLInputElement>(null);
-  const blocked = inSession || busy;
+  const blocked = (inSession && !onReply) || busy;
+  const label = inSession ? (onReply ? "Ask the tutor, or ask to go another way" : "The built-in sample can't answer questions") : onReply ? "Answer the tutor" : "What do you need to be ready for?";
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const request = text.trim();
     if (blocked || request === "") return;
+    if (onReply) {
+      onReply(request);
+      setText("");
+      return;
+    }
     startSession(request, notes);
     setText("");
     setNotes(null);
@@ -243,7 +261,7 @@ function Composer({ inSession, busy }: { inSession: boolean; busy: boolean }) {
         <button
           type="button"
           className="composer-icon"
-          disabled={blocked}
+          disabled={blocked || onReply !== undefined}
           title="Attach your notes as a PDF"
           aria-label="Attach your notes as a PDF"
           onClick={() => picker.current?.click()}
@@ -257,10 +275,10 @@ function Composer({ inSession, busy }: { inSession: boolean; busy: boolean }) {
           value={text}
           disabled={blocked}
           onChange={(event) => setText(event.target.value)}
-          placeholder={inSession ? "Asking mid-session isn't built yet" : "What do you need to be ready for?"}
-          aria-label={inSession ? "Ask a question" : "What do you need to be ready for?"}
+          placeholder={label}
+          aria-label={label}
         />
-        <button type="submit" className="composer-send" disabled={blocked || text.trim() === ""} aria-label="Start the session">
+        <button type="submit" className="composer-send" disabled={blocked || text.trim() === ""} aria-label={onReply ? "Send" : "Start the session"}>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>
@@ -316,6 +334,64 @@ function StartScreen({ state }: { state: PlayerState }) {
   );
 }
 
+/** Something said mid-session: the student's words as a bubble, the tutor's answer as a card with its sources. */
+function MessageView({ message }: { message: SessionMessage }) {
+  if (message.from === "student") return <p className="thread-bubble">{message.text}</p>;
+  return (
+    <article className="thread-card thread-card-open">
+      <p className="thread-kind">Tutor</p>
+      {message.statements.map((statement, i) => (
+        <StatementView statement={statement} key={i} />
+      ))}
+    </article>
+  );
+}
+
+/** Before the plan: the tutor's questions and the student's answers, with the open question's answers as buttons. */
+function Conversation({ asking, state }: { asking: Asking; state: PlayerState }) {
+  const reply = (text: string) => void liveSessions.reply(text);
+  return (
+    <aside className="thread" aria-label="Study session">
+      <header className="thread-header">
+        <h2>{asking.request}</h2>
+        <p>Before planning</p>
+      </header>
+      <div className="thread-scroll">
+        <p className="thread-bubble">{asking.request}</p>
+        {asking.chat.map((line, index) =>
+          line.from === "student" ? (
+            <p className="thread-bubble" key={index}>
+              {line.text}
+            </p>
+          ) : (
+            <article className="thread-card thread-card-open" key={index}>
+              <p className="thread-kind">Tutor</p>
+              <p>{line.text}</p>
+            </article>
+          ),
+        )}
+        {!state.pending &&
+          asking.question.options.map((option) => (
+            <button type="button" className="thread-suggestion" key={option} onClick={() => reply(option)}>
+              {option}
+            </button>
+          ))}
+        {state.pending && (
+          <p className="thread-status" role="status">
+            The tutor is planning from your answer. This can take a minute…
+          </p>
+        )}
+        {state.error && (
+          <div className="thread-error" role="alert">
+            <p>{state.error}</p>
+          </div>
+        )}
+      </div>
+      <Composer inSession={false} busy={state.pending} onReply={reply} />
+    </aside>
+  );
+}
+
 /**
  * The session as a conversation beside the 3D view: the student's request, the
  * tutor's plan, then each part as a card, with the way forward and an input
@@ -326,6 +402,7 @@ export default function SessionThread() {
   const { session, index } = state;
   const waiting = caseIsOpen(state);
 
+  if (!session && state.asking) return <Conversation asking={state.asking} state={state} />;
   if (!session) {
     return (
       <aside className="thread" aria-label="Study session">
@@ -382,7 +459,14 @@ export default function SessionThread() {
         </article>
 
         {shown.map((part, step) => (
-          <PartCard part={part} step={step} state={state} key={part.id} />
+          <Fragment key={part.id}>
+            <PartCard part={part} step={step} state={state} />
+            {state.messages
+              .filter((message) => Math.min(message.after, shown.length - 1) === step)
+              .map((message, i) => (
+                <MessageView message={message} key={i} />
+              ))}
+          </Fragment>
         ))}
         {reachedSummary &&
           (atSummary ? (
@@ -394,7 +478,7 @@ export default function SessionThread() {
           ))}
         {state.pending && (
           <p className="thread-status" role="status">
-            {session.parts.length === 0 ? "Preparing the first part…" : "Preparing what comes next…"}
+            {state.messages.at(-1)?.from === "student" ? "The tutor is answering…" : session.parts.length === 0 ? "Preparing the first part…" : "Preparing what comes next…"}
           </p>
         )}
         {state.error && (
@@ -418,7 +502,7 @@ export default function SessionThread() {
           </button>
         )}
       </nav>
-      <Composer inSession busy={state.pending} />
+      <Composer inSession busy={state.pending} onReply={state.live ? sendChat : undefined} />
     </aside>
   );
 }

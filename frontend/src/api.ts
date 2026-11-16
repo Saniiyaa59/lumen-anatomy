@@ -69,6 +69,21 @@ export function startSession(request: string, notes: NotesUpload | null): Promis
   return post('/api/sessions', { request, notes })
 }
 
+export function replyToTutor(sessionId: string, text: string): Promise<unknown> {
+  return post(`/api/sessions/${sessionId}/reply`, { text })
+}
+
+/** Something the student says mid-session, with what they have selected and the part on screen. */
+export interface ChatMessage {
+  text: string
+  selected: readonly string[]
+  part_id: string | null
+}
+
+export function chat(sessionId: string, message: ChatMessage): Promise<unknown> {
+  return post(`/api/sessions/${sessionId}/chat`, message)
+}
+
 export function nextPart(sessionId: string): Promise<unknown> {
   return post(`/api/sessions/${sessionId}/next`)
 }

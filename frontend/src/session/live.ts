@@ -1,9 +1,22 @@
 import * as backend from "../api.ts";
-import { checkPart, checkStart, checkSummary, type Part, type PlanItem, type SessionStart, type Summary } from "./format.ts";
-import { nextNeeds, playerStore, type PlayerStore } from "./player.ts";
+import {
+  checkChatReply,
+  checkPart,
+  checkQuestion,
+  checkStart,
+  checkSummary,
+  isTutorQuestion,
+  type ChatReply,
+  type Part,
+  type PlanItem,
+  type SessionStart,
+  type Summary,
+  type TutorQuestion,
+} from "./format.ts";
+import { currentPart, nextNeeds, playerStore, type ChatLine, type PlayerStore } from "./player.ts";
 
 /** The backend calls a live session makes; lets tests pass a stand-in. */
-export type SessionApi = Pick<typeof backend, "startSession" | "nextPart" | "sendAnswer" | "finishSession">;
+export type SessionApi = Pick<typeof backend, "startSession" | "replyToTutor" | "chat" | "nextPart" | "sendAnswer" | "finishSession">;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
@@ -51,16 +64,81 @@ export class LiveSessions {
     try {
       const upload = notes ? { filename: notes.name, data: await toBase64(notes) } : null;
       const reply = await this.api.startSession(request, upload);
-      mustFit(checkStart(reply), "a session");
-      this.player.start({ ...(reply as SessionStart), parts: [], summary: null }, true);
-      const { runId } = this.player.getState();
-      this.player.setPending(true);
-      await this.fetchPart(runId);
+      await this.open(reply, []);
     } catch (error) {
       this.player.setError(messageOf(error));
     } finally {
       this.player.setPending(false);
     }
+  }
+
+  /** Answer the tutor's question. It replies with a plan, and the first part is fetched, or with one more question. */
+  async reply(text: string): Promise<void> {
+    const { asking, pending } = this.player.getState();
+    if (!asking || pending) return;
+    this.player.setError(null);
+    this.player.setAsking({ ...asking, chat: [...asking.chat, { from: "student", text }] });
+    this.player.setPending(true);
+    try {
+      const reply = await this.api.replyToTutor(asking.session_id, text);
+      await this.open(reply, [...asking.chat, { from: "student", text }]);
+    } catch (error) {
+      // The backend forgets a reply that failed, so take it back off the screen too.
+      this.player.setAsking(asking);
+      this.player.setError(messageOf(error));
+    } finally {
+      this.player.setPending(false);
+    }
+  }
+
+  /**
+   * Say something to the tutor mid-session. The answer appears in the thread, and the plan
+   * changes if the tutor changed it. Returns the structures the answer points to, for
+   * the caller to select, or an empty list if it failed.
+   */
+  async chat(text: string, selected: readonly string[]): Promise<string[]> {
+    const state = this.player.getState();
+    const { session, live, runId, pending } = state;
+    if (!session || !live || pending) return [];
+    const before = state.messages;
+    const after = state.index;
+    this.player.setError(null);
+    this.player.setMessages([...before, { from: "student", text, statements: [], after }]);
+    this.player.setPending(true);
+    try {
+      const reply = await this.api.chat(session.session_id, { text, selected, part_id: currentPart(state)?.id ?? null });
+      if (!this.isCurrent(runId)) return [];
+      mustFit(checkChatReply(reply), "an answer");
+      const { statements, point_to, plan } = reply as ChatReply;
+      this.player.setPlan(plan);
+      const said = this.player.getState().messages;
+      this.player.setMessages([...said, { from: "tutor", text: "", statements, after }]);
+      return point_to;
+    } catch (error) {
+      if (this.isCurrent(runId)) {
+        // The backend keeps nothing from a failed message, so take it back off the screen too.
+        this.player.setMessages(before);
+        this.player.setError(messageOf(error));
+      }
+      return [];
+    } finally {
+      if (this.isCurrent(runId)) this.player.setPending(false);
+    }
+  }
+
+  /** Act on the reply that opens a session: show the tutor's question, or begin the session and fetch its first part. */
+  private async open(reply: unknown, chat: ChatLine[]): Promise<void> {
+    if (isTutorQuestion(reply)) {
+      mustFit(checkQuestion(reply), "a question");
+      const { session_id, request, question } = reply as TutorQuestion;
+      this.player.setAsking({ session_id, request, question, chat: [...chat, { from: "tutor", text: question.text }] });
+      return;
+    }
+    mustFit(checkStart(reply), "a session");
+    this.player.start({ ...(reply as SessionStart), parts: [], summary: null }, true);
+    const { runId } = this.player.getState();
+    this.player.setPending(true);
+    await this.fetchPart(runId);
   }
 
   /** Move on from the part on screen, fetching the next part or the summary first if it isn't here yet. */
