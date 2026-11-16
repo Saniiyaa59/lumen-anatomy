@@ -20,6 +20,13 @@ function fakeBackend(overrides: Partial<SessionApi> = {}) {
   let sent = 0;
   const api = {
     startSession: vi.fn<SessionApi["startSession"]>(async (request) => ({ ...structuredClone(startFields), session_id: "s1", request })),
+    replyToTutor: vi.fn<SessionApi["replyToTutor"]>(async () => ({ ...structuredClone(startFields), session_id: "s1", request: "exam" })),
+    chat: vi.fn<SessionApi["chat"]>(async () => ({
+      statements: [structuredClone(sample.parts[0].statements[0])],
+      point_to: [LAD],
+      plan: sample.plan,
+      plan_changed: false,
+    })),
     nextPart: vi.fn<SessionApi["nextPart"]>(async () =>
       sent < TOTAL ? { part: structuredClone(sample.parts[sent++]), plan: sample.plan, done: false } : { part: null, plan: sample.plan, done: true },
     ),
@@ -27,6 +34,8 @@ function fakeBackend(overrides: Partial<SessionApi> = {}) {
     finishSession: vi.fn<SessionApi["finishSession"]>(async () => structuredClone(sample.summary)),
   };
   if (overrides.startSession) api.startSession.mockImplementation(overrides.startSession);
+  if (overrides.replyToTutor) api.replyToTutor.mockImplementation(overrides.replyToTutor);
+  if (overrides.chat) api.chat.mockImplementation(overrides.chat);
   if (overrides.nextPart) api.nextPart.mockImplementation(overrides.nextPart);
   const player = new PlayerStore();
   return { api, player, live: new LiveSessions(player, api) };
@@ -217,5 +226,163 @@ describe("LiveSessions", () => {
     afterReload.player.answer(LAD, clickOn(`${LAD}.0`, 0.02));
     expect(afterReload.api.sendAnswer).toHaveBeenCalledTimes(1);
     expect(afterReload.api.sendAnswer.mock.calls[0][1].attempt).toBe(2);
+  });
+});
+
+describe("a tutor that asks before it plans", () => {
+  const question = {
+    format: "lumen.session/0.1",
+    session_id: "s1",
+    region: "heart",
+    request: "teach me about the exam I have tmr",
+    question: { text: "What does your exam cover?", options: ["Coronary arteries", "Valves"] },
+  };
+
+  it("shows the question, then plans from the answer and fetches the first part", async () => {
+    const { api, player, live } = fakeBackend({ startSession: vi.fn(async () => structuredClone(question)) });
+    await live.start(question.request, null);
+    expect(player.getState()).toMatchObject({ session: null, pending: false, error: null });
+    expect(player.getState().asking).toEqual({
+      session_id: "s1",
+      request: question.request,
+      question: question.question,
+      chat: [{ from: "tutor", text: "What does your exam cover?" }],
+    });
+    expect(api.nextPart).not.toHaveBeenCalled();
+
+    await live.reply("Coronary arteries");
+    expect(api.replyToTutor).toHaveBeenCalledWith("s1", "Coronary arteries");
+    expect(player.getState().asking).toBeNull();
+    expect(player.getState().session?.parts).toHaveLength(1);
+  });
+
+  it("can ask a second question, keeping what was said", async () => {
+    const again = { ...structuredClone(question), question: { text: "Which part of the valves?", options: [] } };
+    const { player, live } = fakeBackend({ startSession: vi.fn(async () => structuredClone(question)), replyToTutor: vi.fn(async () => again) });
+    await live.start(question.request, null);
+    await live.reply("Valves");
+    expect(player.getState().asking?.chat).toEqual([
+      { from: "tutor", text: "What does your exam cover?" },
+      { from: "student", text: "Valves" },
+      { from: "tutor", text: "Which part of the valves?" },
+    ]);
+  });
+
+  it("takes a failed answer back off the screen and says why", async () => {
+    const { player, live } = fakeBackend({
+      startSession: vi.fn(async () => structuredClone(question)),
+      replyToTutor: vi.fn(async () => {
+        throw new Error("The tutor could not do that: overloaded");
+      }),
+    });
+    await live.start(question.request, null);
+    await live.reply("Valves");
+    expect(player.getState().asking?.chat).toHaveLength(1);
+    expect(player.getState()).toMatchObject({ pending: false, error: "The tutor could not do that: overloaded" });
+  });
+
+  it("refuses a question that doesn't fit the format", async () => {
+    const { player, live } = fakeBackend({ startSession: vi.fn(async () => ({ ...structuredClone(question), question: { text: "" } })) });
+    await live.start(question.request, null);
+    expect(player.getState().asking).toBeNull();
+    expect(player.getState().error).toContain("question.text");
+  });
+});
+
+describe("talking to the tutor mid-session", () => {
+  it("sends the message with the selection and the part on screen, and shows the answer after that part", async () => {
+    const { api, player, live } = fakeBackend();
+    await live.start("Prepare me", null);
+    const pointTo = await live.chat("where does this run?", [LAD]);
+
+    expect(api.chat).toHaveBeenCalledWith("s1", { text: "where does this run?", selected: [LAD], part_id: sample.parts[0].id });
+    expect(pointTo).toEqual([LAD]);
+    expect(player.getState().messages).toEqual([
+      { from: "student", text: "where does this run?", statements: [], after: 0 },
+      { from: "tutor", text: "", statements: [sample.parts[0].statements[0]], after: 0, pointTo: [LAD] },
+    ]);
+    expect(player.getState()).toMatchObject({ pending: false, error: null });
+  });
+
+  it("takes on a changed plan", async () => {
+    const plan = sample.plan.slice(0, 2);
+    const { player, live } = fakeBackend({
+      chat: vi.fn(async () => ({ statements: [structuredClone(sample.parts[0].statements[0])], point_to: [], plan, plan_changed: true })),
+    });
+    await live.start("Prepare me", null);
+    await live.chat("can we do less?", []);
+    expect(player.getState().session?.plan).toEqual(plan);
+  });
+
+  it("takes a failed message back off the screen and says why", async () => {
+    const { player, live } = fakeBackend({
+      chat: vi.fn(async () => {
+        throw new Error("The tutor could not do that: overloaded");
+      }),
+    });
+    await live.start("Prepare me", null);
+    expect(await live.chat("hello?", [])).toEqual([]);
+    expect(player.getState()).toMatchObject({ messages: [], pending: false, error: "The tutor could not do that: overloaded" });
+  });
+
+  it("refuses an answer that points at something not on the model", async () => {
+    const { player, live } = fakeBackend({
+      chat: vi.fn(async () => ({ statements: [structuredClone(sample.parts[0].statements[0])], point_to: ["spleen"], plan: sample.plan, plan_changed: false })),
+    });
+    await live.start("Prepare me", null);
+    await live.chat("what is this?", []);
+    expect(player.getState().error).toContain("spleen");
+    expect(player.getState().messages).toEqual([]);
+  });
+});
+
+describe("exploring with no plan", () => {
+  const explore = { ...structuredClone(startFields), session_id: "s1", request: "Explore the heart", plan: [] };
+  const statement = sample.parts[0].statements[0];
+
+  it("opens with no part to fetch, and chat messages come before any part", async () => {
+    const { api, player, live } = fakeBackend({ startSession: vi.fn(async () => structuredClone(explore)), chat: vi.fn(async () => ({ statements: [structuredClone(statement)], point_to: [], plan: [], plan_changed: false })) });
+    expect(await live.start("", null)).toEqual([]);
+    expect(api.nextPart).not.toHaveBeenCalled();
+    expect(player.getState().session?.plan).toEqual([]);
+    await live.chat("what is this?", [LAD]);
+    expect(player.getState().messages.map((m) => [m.from, m.after])).toEqual([
+      ["student", -1],
+      ["tutor", -1],
+    ]);
+  });
+
+  it("shows the answer to an opening question with the question above it", async () => {
+    const answered = { ...structuredClone(explore), request: "how does blood flow in the aorta?", answer: { statements: [structuredClone(statement)], point_to: [LAD] } };
+    const { player, live } = fakeBackend({ startSession: vi.fn(async () => answered) });
+    expect(await live.start("how does blood flow in the aorta?", null)).toEqual([LAD]);
+    expect(player.getState().messages).toEqual([
+      { from: "student", text: "how does blood flow in the aorta?", statements: [], after: -1 },
+      { from: "tutor", text: "", statements: [statement], after: -1, pointTo: [LAD] },
+    ]);
+  });
+
+  it("fetches the first part when the tutor plans a session from the chat", async () => {
+    const { api, player, live } = fakeBackend({
+      startSession: vi.fn(async () => structuredClone(explore)),
+      chat: vi.fn(async () => ({ statements: [structuredClone(statement)], point_to: [], plan: sample.plan, plan_changed: true })),
+    });
+    await live.start("", null);
+    await live.chat("quiz me on this", []);
+    expect(api.nextPart).toHaveBeenCalledTimes(1);
+    expect(player.getState().session?.parts).toHaveLength(1);
+    expect(player.getState().pending).toBe(false);
+  });
+
+  it("keeps the questions asked before the plan when the session opens", async () => {
+    const question = { format: "lumen.session/0.1", session_id: "s1", region: "heart", request: "exam", question: { text: "What does it cover?", options: [] } };
+    const { player, live } = fakeBackend({ startSession: vi.fn(async () => question) });
+    await live.start("exam", null);
+    await live.reply("Coronary arteries");
+    expect(player.getState().messages.map((m) => [m.from, m.text])).toEqual([
+      ["student", "exam"],
+      ["tutor", "What does it cover?"],
+      ["student", "Coronary arteries"],
+    ]);
   });
 });

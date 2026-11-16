@@ -154,7 +154,7 @@ export class LabelLayer {
       this.options.onLeave(structureId),
     );
     text.addEventListener("click", (event) =>
-      this.options.onClick(structureId, event.shiftKey),
+      this.options.onClick(structureId, event.shiftKey || event.metaKey || event.ctrlKey),
     );
     const line = document.createElementNS(SVG_NS, "polyline");
     const dot = document.createElementNS(SVG_NS, "circle");

@@ -264,6 +264,48 @@ SUBMIT_PLAN_TOOL: dict[str, Any] = {
     },
 }
 
+ASK_STUDENT_TOOL: dict[str, Any] = {
+    "name": "ask_student",
+    "description": (
+        "Ask the student one question instead of handing in a plan, when you can't tell what the session should cover. "
+        "Nothing is built until they answer; their answer comes back in a new task."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "One short question, as you would say it to the student."},
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 4,
+                "description": "Two to four short answers they can pick with one click, drawn from what this model can show. They can also type their own.",
+            },
+        },
+        "required": ["question", "options"],
+    },
+}
+
+ANSWER_STUDENT_TOOL: dict[str, Any] = {
+    "name": "answer_student",
+    "description": (
+        "Answer what the student just said during the session. Every statement needs a source, as in a part. "
+        "Change the plan only when they ask to go another way or what they said shows the plan no longer fits."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "statements": {**_STATEMENTS, "description": "One to four short statements: your answer."},
+            "point_to": {**_IDS, "description": "Structure ids to select on the model so the student can see what you mean. May be empty."},
+            "new_plan": {
+                "type": "array",
+                "items": _PLANNED_PART,
+                "description": "Only to change direction: the parts that replace every part the student has not been given yet. Leave it out to keep the plan.",
+            },
+        },
+        "required": ["statements", "point_to"],
+    },
+}
+
 DECIDE_TOOL: dict[str, Any] = {
     "name": "decide_next",
     "description": "Say what should happen after the student's answers to a case: carry on with the plan, or put one extra part before the rest.",

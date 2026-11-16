@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import sessions
-from app.agent import MAX_HAND_INS, Agent, AgentError, Brief, NoteFact, PlannedPart, sources_used
+from app.agent import MAX_HAND_INS, Agent, AgentError, Brief, NoteFact, PlannedPart, Turn, sources_used
 from app.agent_tools import LOOKUP_TOOLS, SUBMIT_PART_TOOLS, run_lookup
 from app.articles import get_articles
 from app.llm import LLMError, Usage
@@ -105,12 +105,14 @@ class Scripted:
     def __init__(self, **replies):
         self.replies = {name: list(queue) for name, queue in replies.items()}
         self.asked = []  # (hand-in tool, the messages as they were when asked)
+        self.tools = []  # the tools offered with each request, in the same order
         self.lock = threading.Lock()
 
     def ask(self, *, system, messages, tools=None):
         stage = tools[-1]["name"] if tools else "notes"
         with self.lock:
             self.asked.append((stage, copy.copy(messages)))
+            self.tools.append(tools or [])
             queue = self.replies.get(stage)
             if not queue:
                 raise AssertionError(f"no scripted reply left for {stage}")
@@ -564,3 +566,201 @@ def test_the_sample_is_the_default_and_makes_no_calls():
     start = client.post("/api/sessions", json={"request": "x"}).json()
     state = client.get(f"/api/sessions/{start['session_id']}").json()
     assert (state["source"], state["claude_calls"]) == ("sample", 0)
+
+
+# Asking the student before planning
+
+VALVES_PLAN = {
+    "can_show": ["Where each valve sits"],
+    "words_only": [],
+    "parts": [
+        {"title": "The four valves", "kind": "demonstration", "intent": "Show all four."},
+        {"title": "The aortic valve's leaflets", "kind": "demonstration", "intent": "Show its three leaflets."},
+    ],
+}
+
+
+def ask(question="What does your exam cover?", options=("Coronary arteries", "Valves")):
+    return reply(call("ask_student", question=question, options=list(options)))
+
+
+def test_a_vague_request_gets_a_question_and_the_answer_shapes_the_plan():
+    agent, llm = agent_with(submit_plan=[ask(), reply(call("submit_plan", **VALVES_PLAN))])
+    brief = Brief(request="teach me about the exam I have tmr")
+
+    question = agent.plan(brief)
+    assert question.text == "What does your exam cover?" and question.options == ["Coronary arteries", "Valves"]
+    assert brief.plan == []
+    assert [tool["name"] for tool in llm.tools[0]][-3:] == ["ask_student", "answer_student", "submit_plan"]
+
+    brief.conversation += [Turn("tutor", question.text), Turn("student", "Valves")]
+    assert agent.plan(brief) is None
+    # A plan with no case is fine when the topic has no blockage to find.
+    assert [item.title for item in brief.plan] == ["The four valves", "The aortic valve's leaflets"]
+    task = llm.asked[1][1][0]["content"]
+    assert "- You said: What does your exam cover?" in task and "- The student said: Valves" in task
+
+
+def test_after_two_questions_the_agent_can_only_plan():
+    agent, llm = agent_with(submit_plan=[reply(call("submit_plan", **VALVES_PLAN))])
+    brief = Brief(request="help", conversation=[Turn("tutor", "Which topic?"), Turn("student", "not sure"), Turn("tutor", "Valves or arteries?"), Turn("student", "either")])
+    assert agent.plan(brief) is None
+    assert [tool["name"] for tool in llm.tools[0]][-2:] == ["answer_student", "submit_plan"]
+    assert "You have asked enough questions" in llm.asked[0][1][0]["content"]
+
+
+def test_a_question_with_too_many_options_is_sent_back():
+    agent, llm = agent_with(submit_plan=[ask(options=["a", "b", "c", "d", "e"]), ask()])
+    assert agent.plan(Brief(request="exam")).options == ["Coronary arteries", "Valves"]
+    assert "at most four" in llm.last_results("submit_plan")[0]["content"]
+
+
+def test_a_session_can_open_with_a_question_and_plan_after_the_reply(scripted_sessions):
+    scripted_sessions(
+        submit_plan=[ask(), reply(call("submit_plan", **VALVES_PLAN))],
+        submit_demonstration=[reply(call("submit_demonstration", **demo_draft()))],
+    )
+    opened = client.post("/api/sessions", json={"request": "teach me about the exam I have tmr"}).json()
+    session_id = opened["session_id"]
+    assert opened["question"] == {"text": "What does your exam cover?", "options": ["Coronary arteries", "Valves"]}
+    assert "plan" not in opened
+
+    # Nothing can be fetched until the question is answered.
+    assert client.post(f"/api/sessions/{session_id}/next").status_code == 409
+
+    planned = client.post(f"/api/sessions/{session_id}/reply", json={"text": "Valves"}).json()
+    assert [item["title"] for item in planned["plan"]] == ["The four valves", "The aortic valve's leaflets"]
+    assert client.get(f"/api/sessions/{session_id}").json()["conversation"] == ["tutor: What does your exam cover?", "student: Valves"]
+    assert client.post(f"/api/sessions/{session_id}/next").json()["part"]["kind"] == "demonstration"
+
+    # Once there is a plan, a reply is refused.
+    assert client.post(f"/api/sessions/{session_id}/reply", json={"text": "more"}).status_code == 409
+
+
+def test_a_failed_reply_can_be_tried_again_without_repeating_it(scripted_sessions):
+    llm = scripted_sessions(submit_plan=[ask(), LLMError("overloaded"), reply(call("submit_plan", **VALVES_PLAN))])
+    session_id = client.post("/api/sessions", json={"request": "exam"}).json()["session_id"]
+    failed = client.post(f"/api/sessions/{session_id}/reply", json={"text": "Valves"})
+    assert failed.status_code == 502 and "overloaded" in failed.json()["detail"]
+    assert client.post(f"/api/sessions/{session_id}/reply", json={"text": "Valves"}).status_code == 200
+    assert llm.asked[-1][1][0]["content"].count("The student said: Valves") == 1
+
+
+def test_the_sample_never_asks_and_refuses_a_reply():
+    opened = client.post("/api/sessions", json={"request": "exam"}).json()
+    assert opened["plan"] and "question" not in opened
+    assert client.post(f"/api/sessions/{opened['session_id']}/reply", json={"text": "Valves"}).status_code == 409
+
+
+# Talking with the student mid-session
+
+RCA_STATEMENT = {"text": "The right coronary artery runs down the right coronary sulcus.", "source": {"type": "atlas", "article": "Right coronary artery", "quote": RCA_QUOTE}}
+
+
+def answer(**fields):
+    return reply(call("answer_student", **({"statements": [RCA_STATEMENT], "point_to": [RCA]} | fields)))
+
+
+def test_a_question_is_answered_with_checked_sources_and_what_is_selected_is_passed_on():
+    agent, llm = agent_with(answer_student=[answer(statements=[{"text": "From memory.", "source": {"type": "atlas", "article": "Right coronary artery", "quote": "not in the article at all, made up"}}]), answer()])
+    brief = Brief(request="coronary arteries", plan=[DEMO_ITEM])
+    reply_ = agent.chat(brief, "where does this one run?", [RCA], "Where the right coronary artery runs")
+
+    assert [s.text for s in reply_.statements] == [RCA_STATEMENT["text"]]
+    assert reply_.statements[0].source.type == "atlas" and reply_.point_to == [RCA] and reply_.new_plan is None
+    task = llm.asked[0][1][0]["content"]
+    assert "The student says: where does this one run?" in task
+    assert f"Right coronary artery ({RCA})" in task and '"Where the right coronary artery runs"' in task
+    assert "word for word" in llm.last_results("answer_student")[0]["content"]
+    # Recording the exchange is left to the caller.
+    assert brief.conversation == []
+
+
+def test_an_answer_pointing_at_something_not_on_the_model_is_sent_back():
+    agent, llm = agent_with(answer_student=[answer(point_to=["spleen"]), answer()])
+    agent.chat(Brief(request="x"), "what is this?", [], None)
+    assert '"spleen" is not a structure' in llm.last_results("answer_student")[0]["content"]
+
+
+def test_the_session_takes_a_new_direction_from_the_chat(scripted_sessions):
+    llm = scripted_sessions(
+        submit_plan=[reply(call("submit_plan", **PLAN))],
+        submit_demonstration=[reply(call("submit_demonstration", **demo_draft())), reply(call("submit_demonstration", **demo_draft("The four valves")))],
+        submit_click_case=[reply(call("submit_click_case", **case_draft()))],
+        answer_student=[
+            answer(),
+            answer(new_plan=[{"title": "The four valves", "kind": "demonstration", "intent": "Show them."}]),
+        ],
+    )
+    session_id = client.post("/api/sessions", json={"request": "coronary arteries"}).json()["session_id"]
+    first = client.post(f"/api/sessions/{session_id}/next").json()["part"]
+
+    asked = client.post(f"/api/sessions/{session_id}/chat", json={"text": "where does it run?", "selected": [RCA], "part_id": first["id"]}).json()
+    assert asked["statements"][0]["text"] == RCA_STATEMENT["text"] and asked["point_to"] == [RCA]
+    assert asked["plan_changed"] is False and [i["kind"] for i in asked["plan"]] == ["demonstration", "click_case"]
+
+    turned = client.post(f"/api/sessions/{session_id}/chat", json={"text": "can we do valves instead?"}).json()
+    assert turned["plan_changed"] is True
+    # The part already given stays; everything after it is replaced.
+    assert [i["title"] for i in turned["plan"]] == [first["title"], "The four valves"]
+    nxt = client.post(f"/api/sessions/{session_id}/next").json()
+    assert nxt["part"]["title"] == "The four valves" and nxt["part"]["id"].startswith("c")
+
+    state = client.get(f"/api/sessions/{session_id}").json()
+    assert state["conversation"][0] == "student: where does it run?" and state["conversation"][2] == "student: can we do valves instead?"
+    # The second question saw the first exchange.
+    assert "The student said: where does it run?" in [m for s, m in llm.asked if s == "answer_student"][-1][0]["content"]
+
+
+def test_chat_is_refused_before_the_plan_and_by_the_sample(scripted_sessions):
+    scripted_sessions(submit_plan=[ask()])
+    waiting = client.post("/api/sessions", json={"request": "exam"}).json()["session_id"]
+    assert client.post(f"/api/sessions/{waiting}/chat", json={"text": "hi"}).status_code == 409
+
+
+def test_the_sample_refuses_chat_in_words():
+    session_id = client.post("/api/sessions", json={"request": "exam"}).json()["session_id"]
+    refused = client.post(f"/api/sessions/{session_id}/chat", json={"text": "what is this?"})
+    assert refused.status_code == 409 and "switched off" in refused.json()["detail"]
+
+
+# Exploring: answering instead of planning
+
+def test_a_plain_question_is_answered_and_nothing_is_planned():
+    agent, llm = agent_with(submit_plan=[answer(new_plan=[{"title": "x", "kind": "demonstration", "intent": ""}])])
+    brief = Brief(request="how does blood flow in the right coronary artery?")
+    opened = agent.plan(brief)
+    assert [s.text for s in opened.statements] == [RCA_STATEMENT["text"]] and opened.point_to == [RCA]
+    # A plan can't ride along with an opening answer.
+    assert opened.new_plan is None and brief.plan == []
+    assert "If they ask a question" in llm.asked[0][1][0]["content"]
+
+
+def test_a_question_opens_an_exploring_session_that_can_turn_into_a_guided_one(scripted_sessions):
+    scripted_sessions(
+        submit_plan=[answer()],
+        answer_student=[answer(point_to=[]), answer(new_plan=[{"title": "Where the right coronary artery runs", "kind": "demonstration", "intent": "Show it."}])],
+        submit_demonstration=[reply(call("submit_demonstration", **demo_draft()))],
+    )
+    opened = client.post("/api/sessions", json={"request": "how does blood flow in the right coronary artery?"}).json()
+    session_id = opened["session_id"]
+    assert opened["plan"] == [] and opened["answer"]["point_to"] == [RCA]
+    assert opened["answer"]["statements"][0]["text"] == RCA_STATEMENT["text"]
+
+    explored = client.post(f"/api/sessions/{session_id}/chat", json={"text": "and this one?", "selected": [LAD, CIRCUMFLEX]}).json()
+    assert explored["plan"] == [] and explored["plan_changed"] is False
+
+    guided = client.post(f"/api/sessions/{session_id}/chat", json={"text": "ok quiz me on it"}).json()
+    assert guided["plan_changed"] is True and [i["kind"] for i in guided["plan"]] == ["demonstration"]
+    assert client.post(f"/api/sessions/{session_id}/next").json()["part"]["kind"] == "demonstration"
+    conversation = client.get(f"/api/sessions/{session_id}").json()["conversation"]
+    assert conversation[0] == "student: how does blood flow in the right coronary artery?" and len(conversation) == 6
+
+
+def test_exploring_with_no_request_costs_nothing_until_the_student_asks(scripted_sessions):
+    llm = scripted_sessions(answer_student=[answer()])
+    opened = client.post("/api/sessions", json={"request": ""}).json()
+    assert opened["plan"] == [] and llm.asked == []
+    asked = client.post(f"/api/sessions/{opened['session_id']}/chat", json={"text": "what is this?", "selected": [RCA]}).json()
+    assert asked["point_to"] == [RCA]
+    assert "opened the model to explore" in llm.asked[0][1][0]["content"]

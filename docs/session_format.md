@@ -82,6 +82,12 @@ For a `click_case`:
 | `scope` | `can_show` and `words_only`: lists of short sentences on what the model can show and what can only be explained |
 | `plan` | List of `{part_id, title, kind}`, in order |
 
+**An empty plan means exploring.** When the student's first message is a question rather than a request to be taught or tested ("how does blood flow in the aorta?"), the tutor answers it: the start fields come with `plan: []` and `answer: {statements, point_to}`. The student goes on asking with `/chat`, and the tutor fills the plan only if they ask for a session. An empty `request` opens the model to explore straight away, with no call to Claude and no `answer`; its `request` is then "Explore the heart". `answer` is left out when there is none. A recorded session always has a plan.
+
+**Or, instead, a question.** When the tutor can't tell what to cover (for example "help me with my exam" and no notes), its first reply is a question in place of `scope` and `plan`: `format`, `session_id`, `region`, `request` and `question`, which is `{text, options}`. `options` holds up to four answers the student can pick with one click; they can also type their own. The student answers with `/reply`, and the reply to that is the start fields above or another question. The tutor asks at most two questions before it must plan. The sample never asks.
+
+**During the session**, the student can say something at any time (`/chat`). The tutor answers with sourced statements, may point to structures, and may replace the parts not yet sent with new ones, for example when the student asks for another topic.
+
 **For each part:** one part, in the shape above. The plan may be sent again if it changed.
 
 **At the end:** `summary`, with `solid` and `shaky` (lists of short sentences) and `sources` (every source used).
@@ -134,12 +140,15 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 | Request | Body | Reply |
 | --- | --- | --- |
 | `POST /api/sessions` | `request` (what the student asked for) and `notes`: `null`, or `{filename, data}` with the PDF base64-encoded | The start fields |
+| `POST /api/sessions/{id}/reply` | `text`: the student's answer to the tutor's question | The start fields, or another question. A 409 if the tutor isn't waiting for an answer |
+| `POST /api/sessions/{id}/chat` | `text`; `selected`: structure ids selected on the model; `part_id`: the part on screen, or `null` | `{statements, point_to, plan, plan_changed}`: the tutor's answer as sourced Statements, structure ids for the browser to select, and the current plan. A 409 before the plan, or from the sample |
 | `POST /api/sessions/{id}/next` | None | `{part, plan, done}`: the next part and the current plan, or `part: null` with `done: true` when there are no more |
 | `POST /api/sessions/{id}/answers` | An answer, as above | `{plan}`: the current plan, which the agent may have changed |
 | `POST /api/sessions/{id}/finish` | None | The summary |
 | `GET /api/sessions/{id}` | None | What the backend holds: the request, where its parts come from, the notes' file name and size, how many parts were sent, every answer, any parts the agent gave up on, and how many requests and tokens the session has used. For checking, not for the student |
 | `GET /api/tutor` | None | `{source}`: `sample` or `agent`, so the app can tell the student what to expect |
 
+- `next` gets a 409 while the tutor is waiting for an answer to its question.
 - An unknown session id gets a 404. Sessions are kept in memory, so a restart loses them.
 - When the agent or the Claude API fails, the reply is a 502 with the reason in words. The browser shows it and offers to try again.
 - Notes must be a PDF of at most 20 MB; anything else gets a 422 or a 413.
@@ -156,7 +165,7 @@ The notes travel as base64 inside JSON, not as a file upload, so the backend nee
 
 - **Whether a part's subject can be seen** is not guaranteed by the format. Playing the sample showed it: from the front, the first 46 mm of the anterior interventricular artery is behind the left atrium and the right ventricle, so the case's answer could not be clicked. The backend can now test this before a part is sent (`what_hides` in `backend/app/measure.py`, which casts sight lines through the shapes from where the viewer's camera would stand). It answers for the part's opening view, not for every angle the student could turn to.
 
-- **Asking a question mid-session** ("point and ask") has no request yet.
+- **Talking mid-session** goes through `/chat`. The tutor answers with statements checked like a part's, and when the student asks to go another way it replaces every part not yet given. Its answer can select structures but can't yet move the camera, hide things or run a pulse.
 - **Notes sources** need the backend to say how a page is identified when the upload is slides rather than pages.
 - **Painting in a demonstration.** A demonstration can highlight whole structures only. Marking a stretch of a vessel in one would need a `marks` field.
 - **Whether the correct region should reach the browser at all.** Sending it lets the browser grade instantly, and also lets a curious student find it in the page. For a study tool that seems acceptable.

@@ -206,18 +206,76 @@ class Summary(_Model):
     sources: list[Source]
 
 
-class SessionStart(_Model):
-    """The backend's first reply: what it understood and what it plans."""
+class OpeningAnswer(_Model):
+    """The tutor's answer when the student's first message was a question rather than a request for a session."""
+
+    statements: list[Statement] = Field(min_length=1)
+    point_to: list[str]
+
+
+class _Opening(_Model):
+    """What a session opens with: shared by the backend's first reply and a recorded session."""
 
     format: Literal["lumen.session/0.1"]
     session_id: Text
     region: Text
     request: Text
     scope: Scope
-    plan: list[PlanItem] = Field(min_length=1)
+    plan: list[PlanItem]
 
 
-class RecordedSession(SessionStart):
+class SessionStart(_Opening):
+    """The backend's first reply: what it understood and what it plans.
+
+    An empty plan means the student is exploring: they ask about what they select
+    with /chat, and the tutor adds a plan only if they ask for one. `answer` is
+    the tutor's answer when their first message was a question; it is left out otherwise.
+    """
+
+    answer: OpeningAnswer | None = None
+
+
+class Question(_Model):
+    """A question the tutor asks the student before it plans, when it can't tell what to cover."""
+
+    text: Text
+    options: list[Text] = Field(default_factory=list, max_length=4)  # answers the student can pick with one click
+
+
+class TutorQuestion(_Model):
+    """The backend's first reply when the tutor needs to ask something before planning.
+
+    The student answers with POST /api/sessions/{id}/reply. The reply to that is
+    either another TutorQuestion or a SessionStart with the plan.
+    """
+
+    format: Literal["lumen.session/0.1"]
+    session_id: Text
+    region: Text
+    request: Text
+    question: Question
+
+
+class ReplyRequest(_Model):
+    text: Text  # what the student typed or picked
+
+
+class ChatRequest(_Model):
+    """Something the student says during a session."""
+
+    text: Text
+    selected: list[str] = Field(default_factory=list)  # structure ids selected on the model, so "this" can be understood
+    part_id: str | None = None  # the part on screen, if any
+
+
+class ChatReply(_Model):
+    statements: list[Statement] = Field(min_length=1)  # the tutor's answer, each with its source
+    point_to: list[str]  # structure ids the browser should select so the student sees what is meant
+    plan: list[PlanItem]  # the current plan, which the tutor may have changed
+    plan_changed: bool
+
+
+class RecordedSession(_Opening):
     """A whole session in one file: the start, every part and the summary."""
 
     parts: list[Part]
@@ -225,6 +283,8 @@ class RecordedSession(SessionStart):
 
     @model_validator(mode="after")
     def plan_matches_parts(self) -> "RecordedSession":
+        if not self.plan:
+            raise ValueError("a recorded session needs a plan with at least one item")
         kinds: dict[str, str] = {}
         for part in self.parts:
             if part.id in kinds:
@@ -247,7 +307,7 @@ class NotesUpload(_Model):
 
 
 class StartRequest(_Model):
-    request: Text  # what the student asked to be prepared on
+    request: str = ""  # what the student asked; empty to just explore the model
     notes: NotesUpload | None = None
 
 
@@ -288,6 +348,7 @@ class SessionState(_Model):
 
     session_id: str
     request: str
+    conversation: list[str]  # what the tutor asked and the student replied before the plan, in order
     source: Literal["sample", "agent"]  # where its parts come from
     notes: str | None  # the uploaded file's name
     notes_bytes: int

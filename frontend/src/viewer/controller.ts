@@ -845,7 +845,8 @@ export class SceneController {
     const hit = this.hitAt(event.clientX, event.clientY);
     const place = hit ? this.placeOf(hit) : undefined;
     if (hit && place && this.onPlaceClick?.(hit.structureId, place)) return;
-    this.selection.click(hit?.structureId ?? null, event.shiftKey, place);
+    // Shift, Cmd or Ctrl adds to the selection, as in most apps.
+    this.selection.click(hit?.structureId ?? null, event.shiftKey || event.metaKey || event.ctrlKey, place);
   };
 
   private readonly onPointerLeave = () => {

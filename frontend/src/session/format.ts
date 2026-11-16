@@ -123,7 +123,17 @@ export interface Summary {
   sources: Source[];
 }
 
-/** The backend's first reply: what it understood and what it plans. */
+/** The tutor's answer when the student's first message was a question rather than a request for a session. */
+export interface OpeningAnswer {
+  statements: Statement[];
+  point_to: string[];
+}
+
+/**
+ * The backend's first reply: what it understood and what it plans. An empty plan
+ * means the student is exploring: they ask about what they select, and a plan
+ * arrives only if they ask for one.
+ */
 export interface SessionStart {
   format: typeof SESSION_FORMAT;
   session_id: string;
@@ -131,6 +141,24 @@ export interface SessionStart {
   request: string;
   scope: Scope;
   plan: PlanItem[];
+  /** The tutor's answer, when the first message was a question. */
+  answer?: OpeningAnswer;
+}
+
+/** A question the tutor asks before it plans, when it can't tell what to cover. */
+export interface Question {
+  text: string;
+  /** Answers the student can pick with one click; they can also type their own. */
+  options: string[];
+}
+
+/** The backend's first reply when the tutor asks something before planning. Answered with `/reply`. */
+export interface TutorQuestion {
+  format: typeof SESSION_FORMAT;
+  session_id: string;
+  region: string;
+  request: string;
+  question: Question;
 }
 
 /** A whole session in one file: the start, every part and the summary. Used for the sample and for replaying. */
@@ -457,7 +485,8 @@ export function checkSession(data: unknown, { partial = false }: { partial?: boo
   });
 
   const plan = check.list(session, "plan", "session");
-  if (plan.length === 0) check.fail("session.plan", "must have at least one item");
+  // A session still arriving may have no plan: the student is exploring. A recorded one always has one.
+  if (plan.length === 0 && !partial) check.fail("session.plan", "must have at least one item");
   plan.forEach((item, i) => {
     const path = `session.plan[${i}]`;
     const fields = check.object(item, path);
@@ -479,8 +508,62 @@ export function checkSession(data: unknown, { partial = false }: { partial?: boo
 
 /** Everything wrong with the backend's first reply: the start of a session, before any part. */
 export function checkStart(data: unknown): string[] {
-  const fields = typeof data === "object" && data !== null ? data : {};
-  return checkSession({ ...fields, parts: [], summary: null }, { partial: true });
+  const { answer, ...fields } = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
+  const problems = checkSession({ ...fields, parts: [], summary: null }, { partial: true });
+  if (answer !== undefined && answer !== null) {
+    const check = new Check();
+    const found = check.object(answer, "answer");
+    if (found) {
+      const statements = check.list(found, "statements", "answer");
+      if (Array.isArray(found.statements) && statements.length === 0) check.fail("answer.statements", "must not be empty");
+      statements.forEach((statement, i) => check.statement(statement, `answer.statements[${i}]`));
+      check.structures(found, "point_to", "answer");
+    }
+    problems.push(...check.problems);
+  }
+  return problems;
+}
+
+/** True when the backend's reply is a question for the student rather than a plan. */
+export function isTutorQuestion(data: unknown): boolean {
+  return typeof data === "object" && data !== null && "question" in data;
+}
+
+/** Everything wrong with a question from the tutor. */
+export function checkQuestion(data: unknown): string[] {
+  const fields = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
+  const problems: string[] = [];
+  if (fields.format !== SESSION_FORMAT) problems.push(`format: must be "${SESSION_FORMAT}"`);
+  for (const key of ["session_id", "region", "request"]) {
+    if (typeof fields[key] !== "string" || fields[key] === "") problems.push(`${key}: must be a non-empty string`);
+  }
+  const question = (typeof fields.question === "object" && fields.question !== null ? fields.question : {}) as Record<string, unknown>;
+  if (typeof question.text !== "string" || question.text === "") problems.push("question.text: must be a non-empty string");
+  if (!Array.isArray(question.options) || question.options.some((option) => typeof option !== "string" || option === "")) {
+    problems.push("question.options: must be a list of non-empty strings");
+  }
+  return problems;
+}
+
+/** The tutor's answer to something said mid-session. */
+export interface ChatReply {
+  statements: Statement[];
+  point_to: string[];
+  plan: PlanItem[];
+  plan_changed: boolean;
+}
+
+/** Everything wrong with the tutor's answer to a chat message. */
+export function checkChatReply(data: unknown): string[] {
+  const check = new Check();
+  const fields = check.object(data, "reply");
+  if (!fields) return check.problems;
+  const statements = check.list(fields, "statements", "reply");
+  if (Array.isArray(fields.statements) && statements.length === 0) check.fail("reply.statements", "must not be empty");
+  statements.forEach((statement, i) => check.statement(statement, `reply.statements[${i}]`));
+  check.structures(fields, "point_to", "reply");
+  check.list(fields, "plan", "reply");
+  return check.problems;
 }
 
 /** Everything wrong with one part as it arrives from the backend. */
