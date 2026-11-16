@@ -149,7 +149,9 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 | `GET /api/tutor` | None | `{source}`: `sample` or `agent`, so the app can tell the student what to expect |
 
 - `next` gets a 409 while the tutor is waiting for an answer to its question.
-- An unknown session id gets a 404. Sessions are kept in memory, so a restart loses them.
+- An unknown session id gets a 404. Sessions are saved to `data/lumen.db` after every request that changes them, so they survive a restart and can be carried on another day. One left untouched for 30 days (`SESSION_DAYS`) is deleted. A session saved in a format this backend can no longer read gets a 410.
+- Parts being built ahead of the student are not saved; after a restart the next part is built when it is asked for, so that one takes longer. The PDF of notes is not kept either, only the facts read from it.
+- `finish` keeps the summary: asking again returns it without calling Claude.
 - When the agent or the Claude API fails, the reply is a 502 with the reason in words. The browser shows it and offers to try again.
 - Notes must be a PDF of at most 20 MB; anything else gets a 422 or a 413.
 - An answer must be for a case the session has already been sent, or it gets a 422.

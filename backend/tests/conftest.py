@@ -8,7 +8,7 @@ sessions. That happened once, on 2026-11-14.
 
 import pytest
 
-from app import sessions
+from app import sessions, store
 from app.llm import ClaudeLLM
 
 
@@ -22,3 +22,15 @@ def never_call_claude(monkeypatch):
 
     monkeypatch.setattr(ClaudeLLM, "ask", refuse)
     monkeypatch.setattr(sessions, "make_agent", refuse)
+
+
+@pytest.fixture(autouse=True)
+def fresh_session_store(monkeypatch, tmp_path):
+    """Each test saves sessions to its own empty database, never the developer's data/lumen.db, and starts with none in memory."""
+    monkeypatch.setattr(sessions.settings, "sessions_db", tmp_path / "lumen.db")
+    monkeypatch.setattr(sessions.settings, "session_days", 30)
+    store.get_store.cache_clear()
+    sessions._sessions.clear()
+    yield
+    store.get_store.cache_clear()
+    sessions._sessions.clear()

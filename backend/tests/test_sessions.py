@@ -211,7 +211,7 @@ def test_a_malformed_answer_is_rejected():
 def test_an_unknown_session_is_not_found(method, path):
     response = getattr(client, method)(f"/api/sessions/no-such-session{path}")
     assert response.status_code == 404
-    assert "restarted" in response.json()["detail"]
+    assert "kept for 30 days" in response.json()["detail"]
 
 
 def test_an_answer_for_an_unknown_session_is_not_found():

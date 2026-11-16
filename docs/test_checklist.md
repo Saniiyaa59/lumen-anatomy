@@ -95,7 +95,7 @@ Run with the backend started.
 - [ ] "See the summary" fetches the summary; the backend then reports the session as finished
 - [ ] With the backend stopped, starting a session shows "The session couldn't start" with the reason and "Play the built-in sample instead", which plays the same session marked "built-in sample"
 - [ ] Stopping the backend mid-session, then pressing Next, shows the reason and turns the button into "Try again"; the parts already received stay usable
-- [ ] Reopening a backend session from History after the backend restarted shows what was already received; Next explains that the session is no longer on the server
+- [ ] Reopening a backend session from History after the backend restarted shows what was already received, and Next carries on from where it was left
 
 ## Sessions built by the agent
 

@@ -10,7 +10,10 @@ A session's parts come from one of two places, chosen by SESSION_SOURCE in .env:
 The requests and replies are the same either way, so the browser cannot tell
 the difference except by what the session says.
 
-Sessions are held in memory and are lost when the server restarts.
+Every session is saved to the store (app/store.py) after each request that
+changes it, and loaded from there when it isn't in memory, so a session survives
+a restart and can be picked up the next day. Parts that were being built ahead
+of the student are not saved; they are built again when needed.
 """
 
 import base64
@@ -18,18 +21,19 @@ import binascii
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import lru_cache
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
-from app.agent import Agent, AgentError, Brief, ChatAnswer, PlannedPart, Question, Turn, sources_used
+from app.agent import PART_ADAPTER, Agent, AgentError, Brief, ChatAnswer, NoteFact, PlannedPart, Question, Turn, sources_used
 from app.articles import get_articles
 from app.config import REPO_ROOT, settings
 from app.llm import ClaudeLLM, LLMError, Usage
 from app.region import get_region
+from app.store import get_store
 from app.session_schemas import (
     SESSION_FORMAT,
     AnswerReply,
@@ -191,17 +195,20 @@ class Session:
     tutor: Tutor
     usage: Usage
     notes_name: str | None = None
-    notes: bytes = b""
+    notes_bytes: int = 0  # the PDF itself is not kept: the facts read from it are in the brief
     sent: list[Part] = field(default_factory=list)
     finished: bool = False
     # Set while the tutor waits for the student to answer a question; there is no plan until then.
     question: Question | None = None
     answers: list[ClickAnswer] = field(default_factory=list)
+    summary: Summary | None = None
     # One request at a time per session: building and replanning change its state.
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+# Sessions in use, so each request needn't read the store. Every one is also saved there.
 _sessions: dict[str, Session] = {}
+_loading = threading.Lock()  # so two requests can't load the same session twice
 
 
 @lru_cache
@@ -216,13 +223,108 @@ def make_agent(usage: Usage) -> Agent:
 
 
 def _find(session_id: str) -> Session:
-    try:
-        return _sessions[session_id]
-    except KeyError:
-        raise HTTPException(
-            status_code=404,
-            detail="No such session. Sessions are kept in memory, so it may have been lost when the server restarted.",
-        ) from None
+    """The session with this id: from memory, or else from the store."""
+    with _loading:
+        if session_id in _sessions:
+            return _sessions[session_id]
+        data = get_store().load(session_id)
+        if data is not None:
+            try:
+                _sessions[session_id] = _restore(data)
+                return _sessions[session_id]
+            except Exception:
+                log.exception("Session %s was saved but could not be loaded", session_id)
+                raise HTTPException(status_code=410, detail="This session was saved by an older version of Lumen and can't be reopened. Start a new one.") from None
+    raise HTTPException(
+        status_code=404, detail=f"No such session. Sessions are kept for {settings.session_days:g} days after they were last used."
+    )
+
+
+# Saving and loading. The format is plain JSON; bump SAVE_VERSION when it changes in a way old rows can't be read.
+
+SAVE_VERSION = 1
+
+
+def _dump_brief(brief: Brief) -> dict[str, Any]:
+    return {
+        "request": brief.request,
+        "facts": [asdict(fact) for fact in brief.facts],
+        "conversation": [asdict(turn) for turn in brief.conversation],
+        "scope": brief.scope.model_dump() if brief.scope else None,
+        "plan": [asdict(item) for item in brief.plan],
+        "built": [part.model_dump(mode="json", by_alias=True) for part in brief.built],
+    }
+
+
+def _restore_brief(data: dict[str, Any]) -> Brief:
+    return Brief(
+        request=data["request"],
+        facts=[NoteFact(**fact) for fact in data["facts"]],
+        conversation=[Turn(**turn) for turn in data["conversation"]],
+        scope=Scope.model_validate(data["scope"]) if data["scope"] else None,
+        plan=[PlannedPart(**item) for item in data["plan"]],
+        built=[PART_ADAPTER.validate_python(part) for part in data["built"]],
+    )
+
+
+def _dump(session: Session) -> dict[str, Any]:
+    """Everything needed to carry on with a session later, as plain JSON."""
+    tutor = session.tutor
+    data: dict[str, Any] = {
+        "version": SAVE_VERSION,
+        "request": session.request,
+        "notes_name": session.notes_name,
+        "notes_bytes": session.notes_bytes,
+        "sent": [part.model_dump(mode="json", by_alias=True) for part in session.sent],
+        "finished": session.finished,
+        "question": asdict(session.question) if session.question else None,
+        "answers": [answer.model_dump(mode="json") for answer in session.answers],
+        "usage": asdict(session.usage),
+        "summary": session.summary.model_dump(mode="json") if session.summary else None,
+    }
+    if isinstance(tutor, AgentTutor):
+        data["tutor"] = {"kind": "agent", "brief": _dump_brief(tutor.brief), "replanned": sorted(tutor.replanned), "dropped": tutor.dropped}
+    elif isinstance(tutor, SampleTutor):
+        data["tutor"] = {"kind": "sample", "sent": tutor.sent}
+    else:
+        data["tutor"] = {"kind": "explore"}
+    return data
+
+
+def _restore(data: dict[str, Any]) -> Session:
+    """A session saved with _dump, ready to carry on."""
+    if data.get("version") != SAVE_VERSION:
+        raise ValueError(f"saved with format version {data.get('version')}, this backend reads {SAVE_VERSION}")
+    usage = Usage(**data["usage"])
+    saved = data["tutor"]
+    tutor: Tutor
+    if saved["kind"] == "agent":
+        agent_tutor = AgentTutor(make_agent(usage), _restore_brief(saved["brief"]))
+        agent_tutor.replanned = set(saved["replanned"])
+        agent_tutor.dropped = list(saved["dropped"])
+        tutor = agent_tutor
+    elif saved["kind"] == "sample":
+        sample_tutor = SampleTutor(load_sample())
+        sample_tutor.sent = saved["sent"]
+        tutor = sample_tutor
+    else:
+        tutor = ExploreOnlyTutor()
+    return Session(
+        request=data["request"],
+        tutor=tutor,
+        usage=usage,
+        notes_name=data["notes_name"],
+        notes_bytes=data["notes_bytes"],
+        sent=[PART_ADAPTER.validate_python(part) for part in data["sent"]],
+        finished=data["finished"],
+        question=Question(**data["question"]) if data["question"] else None,
+        answers=[ClickAnswer.model_validate(answer) for answer in data["answers"]],
+        summary=Summary.model_validate(data["summary"]) if data["summary"] else None,
+    )
+
+
+def _save(session_id: str, session: Session) -> None:
+    get_store().save(session_id, _dump(session))
 
 
 def _read_pdf(data: str) -> bytes:
@@ -289,7 +391,7 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     when they asked a question. An empty request opens the model to explore,
     with no call to Claude until they ask something.
     """
-    notes = _read_pdf(body.notes.data) if body.notes else b""
+    notes = _read_pdf(body.notes.data) if body.notes else b""  # checked here, then only its size is kept
     notes_name = body.notes.filename if body.notes else None
     session_id = uuid4().hex
     request = body.request.strip()
@@ -316,9 +418,11 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
         tutor = SampleTutor(load_sample()) if request else ExploreOnlyTutor()
 
     shown = request or f"Explore the {get_region().name.lower()}"
-    session = Session(request=shown, tutor=tutor, usage=usage, notes_name=notes_name, notes=notes, question=question)
+    session = Session(request=shown, tutor=tutor, usage=usage, notes_name=notes_name, notes_bytes=len(notes), question=question)
     _sessions[session_id] = session
-    return _opening(session_id, session, answer)
+    reply = _opening(session_id, session, answer)
+    _save(session_id, session)
+    return reply
 
 
 @router.post("/{session_id}/reply", response_model_exclude_none=True)
@@ -341,7 +445,9 @@ def reply_to_tutor(session_id: str, body: ReplyRequest) -> SessionStart | TutorQ
         answer = opened if isinstance(opened, ChatAnswer) else None
         if answer:
             tutor.brief.conversation.append(Turn("tutor", " ".join(statement.text for statement in answer.statements)))
-        return _opening(session_id, session, answer)
+        reply = _opening(session_id, session, answer)
+        _save(session_id, session)
+        return reply
 
 
 @router.post("/{session_id}/chat")
@@ -358,6 +464,8 @@ def chat(session_id: str, body: ChatRequest) -> ChatReply:
             answer, changed = tutor.chat(body.text.strip(), body.selected, body.part_id)
         except Exception as error:
             raise _agent_failed(error) from None
+        finally:
+            _save(session_id, session)  # what it cost, even when it failed
         return ChatReply(statements=answer.statements, point_to=answer.point_to, plan=tutor.plan(), plan_changed=changed)
 
 
@@ -370,10 +478,12 @@ def next_part(session_id: str) -> NextReply:
             raise HTTPException(status_code=409, detail="The tutor is waiting for an answer to its question before it plans.")
         try:
             part = session.tutor.next_part(session.answers)
+            if part is not None:
+                session.sent.append(part)
         except Exception as error:
             raise _agent_failed(error) from None
-        if part is not None:
-            session.sent.append(part)
+        finally:
+            _save(session_id, session)  # parts given up on and replanning count even when this request failed
         return NextReply(part=part, plan=session.tutor.plan(), done=part is None)
 
 
@@ -386,6 +496,7 @@ def record_answer(session_id: str, answer: ClickAnswer) -> AnswerReply:
         if sent.get(answer.part_id) != "click_case":
             raise HTTPException(status_code=422, detail=f"{answer.part_id!r} is not a case this session has been sent")
         session.answers.append(answer)
+        _save(session_id, session)
         return AnswerReply(plan=session.tutor.plan())
 
 
@@ -394,12 +505,17 @@ def finish_session(session_id: str) -> Summary:
     """End the session and get its summary."""
     session = _find(session_id)
     with session.lock:
+        if session.summary is not None:
+            return session.summary  # already written; asking again costs nothing
         try:
-            summary = session.tutor.summary(session.answers)
+            session.summary = session.tutor.summary(session.answers)
         except Exception as error:
             raise _agent_failed(error) from None
+        finally:
+            _save(session_id, session)
         session.finished = True
-        return summary
+        _save(session_id, session)
+        return session.summary
 
 
 @router.get("/{session_id}")
@@ -413,7 +529,7 @@ def session_state(session_id: str) -> SessionState:
         conversation=[f"{turn.who}: {turn.text}" for turn in tutor.brief.conversation] if isinstance(tutor, AgentTutor) else [],
         source=tutor.name,
         notes=session.notes_name,
-        notes_bytes=len(session.notes),
+        notes_bytes=session.notes_bytes,
         parts_sent=len(session.sent),
         finished=session.finished,
         answers=session.answers,
