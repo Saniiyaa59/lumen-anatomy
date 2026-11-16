@@ -82,6 +82,8 @@ For a `click_case`:
 | `scope` | `can_show` and `words_only`: lists of short sentences on what the model can show and what can only be explained |
 | `plan` | List of `{part_id, title, kind}`, in order |
 
+**An empty plan means exploring.** When the student's first message is a question rather than a request to be taught or tested ("how does blood flow in the aorta?"), the tutor answers it: the start fields come with `plan: []` and `answer: {statements, point_to}`. The student goes on asking with `/chat`, and the tutor fills the plan only if they ask for a session. An empty `request` opens the model to explore straight away, with no call to Claude and no `answer`; its `request` is then "Explore the heart". `answer` is left out when there is none. A recorded session always has a plan.
+
 **Or, instead, a question.** When the tutor can't tell what to cover (for example "help me with my exam" and no notes), its first reply is a question in place of `scope` and `plan`: `format`, `session_id`, `region`, `request` and `question`, which is `{text, options}`. `options` holds up to four answers the student can pick with one click; they can also type their own. The student answers with `/reply`, and the reply to that is the start fields above or another question. The tutor asks at most two questions before it must plan. The sample never asks.
 
 **During the session**, the student can say something at any time (`/chat`). The tutor answers with sourced statements, may point to structures, and may replace the parts not yet sent with new ones, for example when the student asks for another topic.

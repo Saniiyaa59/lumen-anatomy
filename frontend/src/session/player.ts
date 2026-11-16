@@ -34,11 +34,13 @@ export interface Asking {
 /** Something said during a session, shown in the thread after the part it was said on. */
 export interface SessionMessage {
   from: "student" | "tutor";
-  /** The student's words; empty for the tutor, whose answer is in `statements`. */
+  /** The student's words, or a tutor's line that has no source (a question it asked). Empty for a sourced answer. */
   text: string;
   statements: Statement[];
-  /** Index of the part on screen when it was said. */
+  /** Index of the part on screen when it was said, or -1 if said before any part (while exploring). */
   after: number;
+  /** Structures the tutor's answer points to; empty for the student. */
+  pointTo?: string[];
 }
 
 export interface PlayerState {

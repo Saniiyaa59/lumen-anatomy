@@ -99,9 +99,14 @@ def test_start_echoes_what_the_student_asked_and_gives_each_session_its_own_id()
     assert first["session_id"] != second["session_id"]
 
 
-def test_start_needs_a_request():
-    assert client.post("/api/sessions", json={"request": ""}).status_code == 422
-    assert client.post("/api/sessions", json={}).status_code == 422
+def test_an_empty_request_opens_the_model_to_explore():
+    for body in ({"request": ""}, {}):
+        opened = client.post("/api/sessions", json=body).json()
+        assert opened["plan"] == [] and opened["request"] == "Explore the heart" and "answer" not in opened
+        session_id = opened["session_id"]
+        assert client.post(f"/api/sessions/{session_id}/next").json() == {"part": None, "plan": [], "done": True}
+        # With the tutor switched off there is nobody to answer.
+        assert client.post(f"/api/sessions/{session_id}/chat", json={"text": "what is this?"}).status_code == 409
 
 
 def test_start_keeps_uploaded_notes():

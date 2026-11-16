@@ -591,7 +591,7 @@ def test_a_vague_request_gets_a_question_and_the_answer_shapes_the_plan():
     question = agent.plan(brief)
     assert question.text == "What does your exam cover?" and question.options == ["Coronary arteries", "Valves"]
     assert brief.plan == []
-    assert [tool["name"] for tool in llm.tools[0]][-2:] == ["ask_student", "submit_plan"]
+    assert [tool["name"] for tool in llm.tools[0]][-3:] == ["ask_student", "answer_student", "submit_plan"]
 
     brief.conversation += [Turn("tutor", question.text), Turn("student", "Valves")]
     assert agent.plan(brief) is None
@@ -605,7 +605,7 @@ def test_after_two_questions_the_agent_can_only_plan():
     agent, llm = agent_with(submit_plan=[reply(call("submit_plan", **VALVES_PLAN))])
     brief = Brief(request="help", conversation=[Turn("tutor", "Which topic?"), Turn("student", "not sure"), Turn("tutor", "Valves or arteries?"), Turn("student", "either")])
     assert agent.plan(brief) is None
-    assert "ask_student" not in [tool["name"] for tool in llm.tools[0]]
+    assert [tool["name"] for tool in llm.tools[0]][-2:] == ["answer_student", "submit_plan"]
     assert "You have asked enough questions" in llm.asked[0][1][0]["content"]
 
 
@@ -722,3 +722,45 @@ def test_the_sample_refuses_chat_in_words():
     session_id = client.post("/api/sessions", json={"request": "exam"}).json()["session_id"]
     refused = client.post(f"/api/sessions/{session_id}/chat", json={"text": "what is this?"})
     assert refused.status_code == 409 and "switched off" in refused.json()["detail"]
+
+
+# Exploring: answering instead of planning
+
+def test_a_plain_question_is_answered_and_nothing_is_planned():
+    agent, llm = agent_with(submit_plan=[answer(new_plan=[{"title": "x", "kind": "demonstration", "intent": ""}])])
+    brief = Brief(request="how does blood flow in the right coronary artery?")
+    opened = agent.plan(brief)
+    assert [s.text for s in opened.statements] == [RCA_STATEMENT["text"]] and opened.point_to == [RCA]
+    # A plan can't ride along with an opening answer.
+    assert opened.new_plan is None and brief.plan == []
+    assert "If they ask a question" in llm.asked[0][1][0]["content"]
+
+
+def test_a_question_opens_an_exploring_session_that_can_turn_into_a_guided_one(scripted_sessions):
+    scripted_sessions(
+        submit_plan=[answer()],
+        answer_student=[answer(point_to=[]), answer(new_plan=[{"title": "Where the right coronary artery runs", "kind": "demonstration", "intent": "Show it."}])],
+        submit_demonstration=[reply(call("submit_demonstration", **demo_draft()))],
+    )
+    opened = client.post("/api/sessions", json={"request": "how does blood flow in the right coronary artery?"}).json()
+    session_id = opened["session_id"]
+    assert opened["plan"] == [] and opened["answer"]["point_to"] == [RCA]
+    assert opened["answer"]["statements"][0]["text"] == RCA_STATEMENT["text"]
+
+    explored = client.post(f"/api/sessions/{session_id}/chat", json={"text": "and this one?", "selected": [LAD, CIRCUMFLEX]}).json()
+    assert explored["plan"] == [] and explored["plan_changed"] is False
+
+    guided = client.post(f"/api/sessions/{session_id}/chat", json={"text": "ok quiz me on it"}).json()
+    assert guided["plan_changed"] is True and [i["kind"] for i in guided["plan"]] == ["demonstration"]
+    assert client.post(f"/api/sessions/{session_id}/next").json()["part"]["kind"] == "demonstration"
+    conversation = client.get(f"/api/sessions/{session_id}").json()["conversation"]
+    assert conversation[0] == "student: how does blood flow in the right coronary artery?" and len(conversation) == 6
+
+
+def test_exploring_with_no_request_costs_nothing_until_the_student_asks(scripted_sessions):
+    llm = scripted_sessions(answer_student=[answer()])
+    opened = client.post("/api/sessions", json={"request": ""}).json()
+    assert opened["plan"] == [] and llm.asked == []
+    asked = client.post(f"/api/sessions/{opened['session_id']}/chat", json={"text": "what is this?", "selected": [RCA]}).json()
+    assert asked["point_to"] == [RCA]
+    assert "opened the model to explore" in llm.asked[0][1][0]["content"]

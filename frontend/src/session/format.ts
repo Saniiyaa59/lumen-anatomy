@@ -123,7 +123,17 @@ export interface Summary {
   sources: Source[];
 }
 
-/** The backend's first reply: what it understood and what it plans. */
+/** The tutor's answer when the student's first message was a question rather than a request for a session. */
+export interface OpeningAnswer {
+  statements: Statement[];
+  point_to: string[];
+}
+
+/**
+ * The backend's first reply: what it understood and what it plans. An empty plan
+ * means the student is exploring: they ask about what they select, and a plan
+ * arrives only if they ask for one.
+ */
 export interface SessionStart {
   format: typeof SESSION_FORMAT;
   session_id: string;
@@ -131,6 +141,8 @@ export interface SessionStart {
   request: string;
   scope: Scope;
   plan: PlanItem[];
+  /** The tutor's answer, when the first message was a question. */
+  answer?: OpeningAnswer;
 }
 
 /** A question the tutor asks before it plans, when it can't tell what to cover. */
@@ -473,7 +485,8 @@ export function checkSession(data: unknown, { partial = false }: { partial?: boo
   });
 
   const plan = check.list(session, "plan", "session");
-  if (plan.length === 0) check.fail("session.plan", "must have at least one item");
+  // A session still arriving may have no plan: the student is exploring. A recorded one always has one.
+  if (plan.length === 0 && !partial) check.fail("session.plan", "must have at least one item");
   plan.forEach((item, i) => {
     const path = `session.plan[${i}]`;
     const fields = check.object(item, path);
@@ -495,8 +508,20 @@ export function checkSession(data: unknown, { partial = false }: { partial?: boo
 
 /** Everything wrong with the backend's first reply: the start of a session, before any part. */
 export function checkStart(data: unknown): string[] {
-  const fields = typeof data === "object" && data !== null ? data : {};
-  return checkSession({ ...fields, parts: [], summary: null }, { partial: true });
+  const { answer, ...fields } = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
+  const problems = checkSession({ ...fields, parts: [], summary: null }, { partial: true });
+  if (answer !== undefined && answer !== null) {
+    const check = new Check();
+    const found = check.object(answer, "answer");
+    if (found) {
+      const statements = check.list(found, "statements", "answer");
+      if (Array.isArray(found.statements) && statements.length === 0) check.fail("answer.statements", "must not be empty");
+      statements.forEach((statement, i) => check.statement(statement, `answer.statements[${i}]`));
+      check.structures(found, "point_to", "answer");
+    }
+    problems.push(...check.problems);
+  }
+  return problems;
 }
 
 /** True when the backend's reply is a question for the student rather than a plan. */

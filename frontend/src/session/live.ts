@@ -13,7 +13,7 @@ import {
   type Summary,
   type TutorQuestion,
 } from "./format.ts";
-import { currentPart, nextNeeds, playerStore, type ChatLine, type PlayerStore } from "./player.ts";
+import { currentPart, nextNeeds, playerStore, type ChatLine, type PlayerStore, type SessionMessage } from "./player.ts";
 
 /** The backend calls a live session makes; lets tests pass a stand-in. */
 export type SessionApi = Pick<typeof backend, "startSession" | "replyToTutor" | "chat" | "nextPart" | "sendAnswer" | "finishSession">;
@@ -57,35 +57,41 @@ export class LiveSessions {
     player.subscribe(this.sendNewAnswers);
   }
 
-  /** Start a session from what the student asked for and, optionally, their notes as a PDF. */
-  async start(request: string, notes: (Blob & { name: string }) | null): Promise<void> {
+  /**
+   * Start a session from what the student asked for and, optionally, their notes as a PDF.
+   * An empty request opens the model to explore. Returns the structures the tutor's
+   * answer points to, if its first reply was an answer, for the caller to select.
+   */
+  async start(request: string, notes: (Blob & { name: string }) | null): Promise<string[]> {
     this.player.close();
     this.player.setPending(true);
     try {
       const upload = notes ? { filename: notes.name, data: await toBase64(notes) } : null;
       const reply = await this.api.startSession(request, upload);
-      await this.open(reply, []);
+      return await this.open(reply, []);
     } catch (error) {
       this.player.setError(messageOf(error));
+      return [];
     } finally {
       this.player.setPending(false);
     }
   }
 
   /** Answer the tutor's question. It replies with a plan, and the first part is fetched, or with one more question. */
-  async reply(text: string): Promise<void> {
+  async reply(text: string): Promise<string[]> {
     const { asking, pending } = this.player.getState();
-    if (!asking || pending) return;
+    if (!asking || pending) return [];
     this.player.setError(null);
     this.player.setAsking({ ...asking, chat: [...asking.chat, { from: "student", text }] });
     this.player.setPending(true);
     try {
       const reply = await this.api.replyToTutor(asking.session_id, text);
-      await this.open(reply, [...asking.chat, { from: "student", text }]);
+      return await this.open(reply, [...asking.chat, { from: "student", text }]);
     } catch (error) {
       // The backend forgets a reply that failed, so take it back off the screen too.
       this.player.setAsking(asking);
       this.player.setError(messageOf(error));
+      return [];
     } finally {
       this.player.setPending(false);
     }
@@ -101,7 +107,7 @@ export class LiveSessions {
     const { session, live, runId, pending } = state;
     if (!session || !live || pending) return [];
     const before = state.messages;
-    const after = state.index;
+    const after = session.parts.length === 0 ? -1 : state.index;
     this.player.setError(null);
     this.player.setMessages([...before, { from: "student", text, statements: [], after }]);
     this.player.setPending(true);
@@ -112,7 +118,9 @@ export class LiveSessions {
       const { statements, point_to, plan } = reply as ChatReply;
       this.player.setPlan(plan);
       const said = this.player.getState().messages;
-      this.player.setMessages([...said, { from: "tutor", text: "", statements, after }]);
+      this.player.setMessages([...said, { from: "tutor", text: "", statements, after, pointTo: point_to }]);
+      // Exploring until now, and the tutor has planned a session: fetch its first part.
+      if (session.parts.length === 0 && plan.length > 0) await this.fetchPart(runId);
       return point_to;
     } catch (error) {
       if (this.isCurrent(runId)) {
@@ -127,18 +135,26 @@ export class LiveSessions {
   }
 
   /** Act on the reply that opens a session: show the tutor's question, or begin the session and fetch its first part. */
-  private async open(reply: unknown, chat: ChatLine[]): Promise<void> {
+  private async open(reply: unknown, chat: ChatLine[]): Promise<string[]> {
     if (isTutorQuestion(reply)) {
       mustFit(checkQuestion(reply), "a question");
       const { session_id, request, question } = reply as TutorQuestion;
       this.player.setAsking({ session_id, request, question, chat: [...chat, { from: "tutor", text: question.text }] });
-      return;
+      return [];
     }
     mustFit(checkStart(reply), "a session");
-    this.player.start({ ...(reply as SessionStart), parts: [], summary: null }, true);
+    const { answer, ...start } = reply as SessionStart;
+    this.player.start({ ...start, parts: [], summary: null }, true);
+    // Keep what was said before the session opened: the request, any questions and answers, and the tutor's answer.
+    const said: SessionMessage[] = chat.map((line) => ({ from: line.from, text: line.text, statements: [], after: -1 }));
+    if (answer) said.push({ from: "tutor", text: "", statements: answer.statements, after: -1, pointTo: answer.point_to });
+    if (said.length > 0) this.player.setMessages([{ from: "student", text: start.request, statements: [], after: -1 }, ...said]);
+    // With no plan the student is exploring: there is no part to fetch.
+    if (start.plan.length === 0) return answer?.point_to ?? [];
     const { runId } = this.player.getState();
     this.player.setPending(true);
     await this.fetchPart(runId);
+    return [];
   }
 
   /** Move on from the part on screen, fetching the next part or the summary first if it isn't here yet. */

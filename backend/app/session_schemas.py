@@ -206,15 +206,33 @@ class Summary(_Model):
     sources: list[Source]
 
 
-class SessionStart(_Model):
-    """The backend's first reply: what it understood and what it plans."""
+class OpeningAnswer(_Model):
+    """The tutor's answer when the student's first message was a question rather than a request for a session."""
+
+    statements: list[Statement] = Field(min_length=1)
+    point_to: list[str]
+
+
+class _Opening(_Model):
+    """What a session opens with: shared by the backend's first reply and a recorded session."""
 
     format: Literal["lumen.session/0.1"]
     session_id: Text
     region: Text
     request: Text
     scope: Scope
-    plan: list[PlanItem] = Field(min_length=1)
+    plan: list[PlanItem]
+
+
+class SessionStart(_Opening):
+    """The backend's first reply: what it understood and what it plans.
+
+    An empty plan means the student is exploring: they ask about what they select
+    with /chat, and the tutor adds a plan only if they ask for one. `answer` is
+    the tutor's answer when their first message was a question; it is left out otherwise.
+    """
+
+    answer: OpeningAnswer | None = None
 
 
 class Question(_Model):
@@ -257,7 +275,7 @@ class ChatReply(_Model):
     plan_changed: bool
 
 
-class RecordedSession(SessionStart):
+class RecordedSession(_Opening):
     """A whole session in one file: the start, every part and the summary."""
 
     parts: list[Part]
@@ -265,6 +283,8 @@ class RecordedSession(SessionStart):
 
     @model_validator(mode="after")
     def plan_matches_parts(self) -> "RecordedSession":
+        if not self.plan:
+            raise ValueError("a recorded session needs a plan with at least one item")
         kinds: dict[str, str] = {}
         for part in self.parts:
             if part.id in kinds:
@@ -287,7 +307,7 @@ class NotesUpload(_Model):
 
 
 class StartRequest(_Model):
-    request: Text  # what the student asked to be prepared on
+    request: str = ""  # what the student asked; empty to just explore the model
     notes: NotesUpload | None = None
 
 

@@ -239,7 +239,7 @@ class Agent:
 
     def _background(self, brief: Brief) -> str:
         """What the session is for and what has happened so far, as text for a task."""
-        lines = [f"The student asked: {brief.request}"]
+        lines = [f"The student asked: {brief.request}" if brief.request else "The student opened the model to explore it; they have not asked for anything yet."]
         if brief.conversation:
             lines.append("Then:")
             lines += [f"- {'You said' if turn.who == 'tutor' else 'The student said'}: {turn.text}" for turn in brief.conversation]
@@ -295,26 +295,33 @@ class Agent:
 
     # Scope and plan
 
-    def plan(self, brief: Brief) -> Question | None:
-        """Plan the session from what the student asked, or ask them something first.
+    def plan(self, brief: Brief) -> Question | ChatAnswer | None:
+        """Plan a session from what the student asked, ask them something first, or simply answer them.
 
-        Fills `brief.scope` and `brief.plan` and returns None, or returns a question
-        for the student and leaves the plan empty. Once MAX_QUESTIONS have been
-        asked, the agent can only plan.
+        Fills `brief.scope` and `brief.plan` and returns None; or returns a question
+        for the student; or returns an answer, when what they said was a question
+        rather than a request to be taught or tested. With a question or an answer
+        the plan stays empty. Once MAX_QUESTIONS have been asked, the agent can
+        no longer ask.
         """
         asked = sum(1 for turn in brief.conversation if turn.who == "tutor")
         may_ask = asked < MAX_QUESTIONS
+        answering = (
+            "First decide what they want. If they ask a question (\"how does blood flow in the aorta?\", \"what is this?\"), "
+            "answer it with answer_student, as you would mid-session: no session is planned, and they can go on exploring the model and asking. "
+            "Plan a session only when they ask to be taught, prepared, revised or quizzed on something.\n\n"
+        )
         if may_ask:
-            deciding = (
-                "First decide whether you know what to cover. Their words, their replies and their notes decide the topic. "
+            deciding = answering + (
+                "If they want a session, decide whether you know what to cover. Their words, their replies and their notes decide the topic. "
                 "If they name a topic, or their notes show what it is, plan for that. "
                 "If they don't (for example \"help me with my exam tomorrow\" with no notes), do not guess: ask with ask_student, "
                 "one short question with two to four answers drawn from what this model can show. "
                 "Also ask if their request is something the model can't show at all, offering the nearest things it can.\n\n"
             )
         else:
-            deciding = (
-                "You have asked enough questions; plan now from what they have said. "
+            deciding = answering + (
+                "You have asked enough questions; if they want a session, plan it now from what they have said. "
                 "If you still had to assume something, say what in words_only.\n\n"
             )
         task = (
@@ -350,7 +357,11 @@ class Agent:
                 raise _Rejected(problems)
             brief.scope, brief.plan = scope, planned
 
-        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[(ASK_STUDENT_TOOL, accept_question)] if may_ask else ())
+        def accept_answer(raw: dict) -> ChatAnswer:
+            return self._accept_answer(brief, {**raw, "new_plan": None})
+
+        also = [(ASK_STUDENT_TOOL, accept_question)] if may_ask else []
+        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)])
 
     # Building a part
 
@@ -478,35 +489,36 @@ class Agent:
             "If they point at something (\"this\", \"here\"), they mean what they have selected. "
             "Select structures with point_to when it helps them see what you mean. "
             "If they ask to go another way (another topic, more practice, skip ahead, something easier), or their question shows the plan no longer fits, "
-            "give new_plan: it replaces every part they have not been given yet. Otherwise leave the plan alone."
+            "give new_plan: it replaces every part they have not been given yet. Otherwise leave the plan alone. "
+            "If there is no plan yet, they are exploring the model: give new_plan only when they ask to be taught, prepared or quizzed."
         )
+        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw))
+
+    def _accept_answer(self, brief: Brief, raw: dict) -> ChatAnswer:
+        """Check an answer to the student: its statements' sources, what it points to, and any new plan."""
         changes = sum(1 for turn in brief.conversation if turn.who == "student")
-
-        def accept(raw: dict) -> ChatAnswer:
-            problems: list[str] = []
-            drafts = raw.get("statements")
-            if not isinstance(drafts, list) or not 1 <= len(drafts) <= 4:
-                raise _Rejected(["statements: give one to four"])
-            checked = self._with_sources(brief, drafts, "statements", problems)
-            statements: list[Statement] = []
-            for index, draft in enumerate(checked):
-                try:
-                    statements.append(Statement.model_validate(draft))
-                except ValidationError:
-                    problems.append(f"statements[{index}]: needs non-empty text and a source")
-            point_to = [str(i) for i in raw.get("point_to") or []]
-            problems += [f'point_to: "{i}" is not a structure on this model' for i in point_to if i not in self.region.structures]
-            new_plan = None
-            if raw.get("new_plan"):
-                taken = {item.part_id for item in brief.plan}
-                new_plan, plan_problems = _read_parts(raw["new_plan"], lambda index, title: f"c{changes + 1}-{index + 1}-{_slug(title)}")
-                problems += plan_problems
-                problems += [f"new_plan: part id {item.part_id} is already used" for item in new_plan if item.part_id in taken]
-            if problems:
-                raise _Rejected(problems)
-            return ChatAnswer(statements=statements, point_to=point_to, new_plan=new_plan)
-
-        return self._work(task, ANSWER_STUDENT_TOOL, accept)
+        problems: list[str] = []
+        drafts = raw.get("statements")
+        if not isinstance(drafts, list) or not 1 <= len(drafts) <= 4:
+            raise _Rejected(["statements: give one to four"])
+        checked = self._with_sources(brief, drafts, "statements", problems)
+        statements: list[Statement] = []
+        for index, draft in enumerate(checked):
+            try:
+                statements.append(Statement.model_validate(draft))
+            except ValidationError:
+                problems.append(f"statements[{index}]: needs non-empty text and a source")
+        point_to = [str(i) for i in raw.get("point_to") or []]
+        problems += [f'point_to: "{i}" is not a structure on this model' for i in point_to if i not in self.region.structures]
+        new_plan = None
+        if raw.get("new_plan"):
+            taken = {item.part_id for item in brief.plan}
+            new_plan, plan_problems = _read_parts(raw["new_plan"], lambda index, title: f"c{changes + 1}-{index + 1}-{_slug(title)}")
+            problems += plan_problems
+            problems += [f"new_plan: part id {item.part_id} is already used" for item in new_plan if item.part_id in taken]
+        if problems:
+            raise _Rejected(problems)
+        return ChatAnswer(statements=statements, point_to=point_to, new_plan=new_plan)
 
     # Replanning
 

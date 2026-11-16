@@ -299,7 +299,7 @@ describe("talking to the tutor mid-session", () => {
     expect(pointTo).toEqual([LAD]);
     expect(player.getState().messages).toEqual([
       { from: "student", text: "where does this run?", statements: [], after: 0 },
-      { from: "tutor", text: "", statements: [sample.parts[0].statements[0]], after: 0 },
+      { from: "tutor", text: "", statements: [sample.parts[0].statements[0]], after: 0, pointTo: [LAD] },
     ]);
     expect(player.getState()).toMatchObject({ pending: false, error: null });
   });
@@ -333,5 +333,56 @@ describe("talking to the tutor mid-session", () => {
     await live.chat("what is this?", []);
     expect(player.getState().error).toContain("spleen");
     expect(player.getState().messages).toEqual([]);
+  });
+});
+
+describe("exploring with no plan", () => {
+  const explore = { ...structuredClone(startFields), session_id: "s1", request: "Explore the heart", plan: [] };
+  const statement = sample.parts[0].statements[0];
+
+  it("opens with no part to fetch, and chat messages come before any part", async () => {
+    const { api, player, live } = fakeBackend({ startSession: vi.fn(async () => structuredClone(explore)), chat: vi.fn(async () => ({ statements: [structuredClone(statement)], point_to: [], plan: [], plan_changed: false })) });
+    expect(await live.start("", null)).toEqual([]);
+    expect(api.nextPart).not.toHaveBeenCalled();
+    expect(player.getState().session?.plan).toEqual([]);
+    await live.chat("what is this?", [LAD]);
+    expect(player.getState().messages.map((m) => [m.from, m.after])).toEqual([
+      ["student", -1],
+      ["tutor", -1],
+    ]);
+  });
+
+  it("shows the answer to an opening question with the question above it", async () => {
+    const answered = { ...structuredClone(explore), request: "how does blood flow in the aorta?", answer: { statements: [structuredClone(statement)], point_to: [LAD] } };
+    const { player, live } = fakeBackend({ startSession: vi.fn(async () => answered) });
+    expect(await live.start("how does blood flow in the aorta?", null)).toEqual([LAD]);
+    expect(player.getState().messages).toEqual([
+      { from: "student", text: "how does blood flow in the aorta?", statements: [], after: -1 },
+      { from: "tutor", text: "", statements: [statement], after: -1, pointTo: [LAD] },
+    ]);
+  });
+
+  it("fetches the first part when the tutor plans a session from the chat", async () => {
+    const { api, player, live } = fakeBackend({
+      startSession: vi.fn(async () => structuredClone(explore)),
+      chat: vi.fn(async () => ({ statements: [structuredClone(statement)], point_to: [], plan: sample.plan, plan_changed: true })),
+    });
+    await live.start("", null);
+    await live.chat("quiz me on this", []);
+    expect(api.nextPart).toHaveBeenCalledTimes(1);
+    expect(player.getState().session?.parts).toHaveLength(1);
+    expect(player.getState().pending).toBe(false);
+  });
+
+  it("keeps the questions asked before the plan when the session opens", async () => {
+    const question = { format: "lumen.session/0.1", session_id: "s1", region: "heart", request: "exam", question: { text: "What does it cover?", options: [] } };
+    const { player, live } = fakeBackend({ startSession: vi.fn(async () => question) });
+    await live.start("exam", null);
+    await live.reply("Coronary arteries");
+    expect(player.getState().messages.map((m) => [m.from, m.text])).toEqual([
+      ["student", "exam"],
+      ["tutor", "What does it cover?"],
+      ["student", "Coronary arteries"],
+    ]);
   });
 });

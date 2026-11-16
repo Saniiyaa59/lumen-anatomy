@@ -51,7 +51,7 @@ export class SelectionStore {
    * A click in the 3D view. `structureId` is null when the click hit empty space.
    *
    * Plain click: select only that structure (empty space clears).
-   * Additive (Shift) click: add the structure, or remove it if already selected.
+   * Additive (Shift, Cmd or Ctrl) click: add the structure, or remove it if already selected.
    * `place` is where on the structure the click landed, when it is known.
    */
   click(structureId: string | null, additive: boolean, place?: ClickPlace): void {

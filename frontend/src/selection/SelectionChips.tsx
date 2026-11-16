@@ -7,7 +7,7 @@ export default function SelectionChips() {
   const { selected } = useSelection()
 
   if (selected.length === 0) {
-    return <p className="selection-hint">Click a structure to select it. Shift-click to add more.</p>
+    return <p className="selection-hint">Click a structure to select it. Shift- or ⌘-click to add more.</p>
   }
 
   return (
@@ -26,6 +26,7 @@ export default function SelectionChips() {
           </button>
         </li>
       ))}
+      {selected.length === 1 && <li className="selection-hint">Shift- or ⌘-click to add more</li>}
     </ul>
   )
 }

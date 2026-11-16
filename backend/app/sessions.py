@@ -38,6 +38,7 @@ from app.session_schemas import (
     ClickAnswer,
     ClickCase,
     NextReply,
+    OpeningAnswer,
     Part,
     PlanItem,
     Question as QuestionReply,
@@ -94,6 +95,21 @@ class SampleTutor:
 
     def summary(self, answers: list[ClickAnswer]) -> Summary:
         return self.script.summary
+
+
+class ExploreOnlyTutor:
+    """A session for clicking around the model with the tutor switched off: no parts, and no answers."""
+
+    name = "sample"
+
+    def plan(self) -> list[PlanItem]:
+        return []
+
+    def next_part(self, answers: list[ClickAnswer]) -> Part | None:
+        return None
+
+    def summary(self, answers: list[ClickAnswer]) -> Summary:
+        return Summary(solid=[], shaky=[], sources=[])
 
 
 class AgentTutor:
@@ -239,8 +255,8 @@ def _agent_failed(error: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=f"The tutor could not do that: {reason}")
 
 
-def _opening(session_id: str, session: Session) -> SessionStart | TutorQuestion:
-    """The reply that opens a session: the tutor's question if it has one, otherwise the plan."""
+def _opening(session_id: str, session: Session, answer: ChatAnswer | None = None) -> SessionStart | TutorQuestion:
+    """The reply that opens a session: the tutor's question if it has one, otherwise the plan (empty when exploring) and any answer."""
     region = get_region().id
     if session.question is not None:
         question = QuestionReply(text=session.question.text, options=session.question.options)
@@ -249,17 +265,29 @@ def _opening(session_id: str, session: Session) -> SessionStart | TutorQuestion:
     if isinstance(tutor, AgentTutor):
         scope = tutor.brief.scope or Scope(can_show=[], words_only=[])
         tutor.prepare(0)  # start on the first part while the browser shows the plan
-    else:
+    elif isinstance(tutor, SampleTutor):
         scope = load_sample().scope
-    return SessionStart(format=SESSION_FORMAT, session_id=session_id, region=region, request=session.request, scope=scope, plan=tutor.plan())
+    else:
+        scope = Scope(can_show=[], words_only=[])
+    opening = OpeningAnswer(statements=answer.statements, point_to=answer.point_to) if answer else None
+    return SessionStart(
+        format=SESSION_FORMAT, session_id=session_id, region=region, request=session.request, scope=scope, plan=tutor.plan(), answer=opening
+    )
 
 
-@router.post("")
+def _answered(brief: Brief, said: str, answer: ChatAnswer) -> None:
+    """Record what the student said and the tutor's answer, so later work knows about them."""
+    brief.conversation += [Turn("student", said), Turn("tutor", " ".join(statement.text for statement in answer.statements))]
+
+
+@router.post("", response_model_exclude_none=True)
 def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     """Start a session from what the student asked for and, optionally, their notes.
 
-    With the agent, the reply may be a question for the student instead of a plan.
-    They answer it with POST /api/sessions/{id}/reply.
+    With the agent, the reply may be a question for the student instead of a plan
+    (they answer it with POST /api/sessions/{id}/reply), or an answer and no plan
+    when they asked a question. An empty request opens the model to explore,
+    with no call to Claude until they ask something.
     """
     notes = _read_pdf(body.notes.data) if body.notes else b""
     notes_name = body.notes.filename if body.notes else None
@@ -267,26 +295,33 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     request = body.request.strip()
     usage = Usage()
     question: Question | None = None
+    answer: ChatAnswer | None = None
 
     if settings.session_source == "agent":
         try:
             agent = make_agent(usage)
             brief = Brief(request=request)
             if body.notes:
-                brief.facts = agent.read_notes(request, body.notes.data, body.notes.filename)
-            question = agent.plan(brief)
+                brief.facts = agent.read_notes(request or "Anything in these notes", body.notes.data, body.notes.filename)
+            if request:
+                opened = agent.plan(brief)
+                question = opened if isinstance(opened, Question) else None
+                answer = opened if isinstance(opened, ChatAnswer) else None
+                if answer:
+                    _answered(brief, request, answer)
         except Exception as error:
             raise _agent_failed(error) from None
         tutor: Tutor = AgentTutor(agent, brief)
     else:
-        tutor = SampleTutor(load_sample())
+        tutor = SampleTutor(load_sample()) if request else ExploreOnlyTutor()
 
-    session = Session(request=request, tutor=tutor, usage=usage, notes_name=notes_name, notes=notes, question=question)
+    shown = request or f"Explore the {get_region().name.lower()}"
+    session = Session(request=shown, tutor=tutor, usage=usage, notes_name=notes_name, notes=notes, question=question)
     _sessions[session_id] = session
-    return _opening(session_id, session)
+    return _opening(session_id, session, answer)
 
 
-@router.post("/{session_id}/reply")
+@router.post("/{session_id}/reply", response_model_exclude_none=True)
 def reply_to_tutor(session_id: str, body: ReplyRequest) -> SessionStart | TutorQuestion:
     """The student's answer to the tutor's question. The tutor plans, or asks one more thing."""
     session = _find(session_id)
@@ -297,12 +332,16 @@ def reply_to_tutor(session_id: str, body: ReplyRequest) -> SessionStart | TutorQ
         said = [Turn("tutor", session.question.text), Turn("student", body.text.strip())]
         tutor.brief.conversation += said
         try:
-            session.question = tutor.agent.plan(tutor.brief)
+            opened = tutor.agent.plan(tutor.brief)
         except Exception as error:
             # Forget the answer, so trying again doesn't give it twice.
             del tutor.brief.conversation[-len(said) :]
             raise _agent_failed(error) from None
-        return _opening(session_id, session)
+        session.question = opened if isinstance(opened, Question) else None
+        answer = opened if isinstance(opened, ChatAnswer) else None
+        if answer:
+            tutor.brief.conversation.append(Turn("tutor", " ".join(statement.text for statement in answer.statements)))
+        return _opening(session_id, session, answer)
 
 
 @router.post("/{session_id}/chat")
@@ -314,7 +353,7 @@ def chat(session_id: str, body: ChatRequest) -> ChatReply:
         if session.question is not None:
             raise HTTPException(status_code=409, detail="The tutor is waiting for an answer to its question; send it with /reply.")
         if not isinstance(tutor, AgentTutor):
-            raise HTTPException(status_code=409, detail="The tutor is switched off: this backend hands out the sample session, which can't answer questions.")
+            raise HTTPException(status_code=409, detail="The tutor is switched off (SESSION_SOURCE is sample), so it can't answer questions.")
         try:
             answer, changed = tutor.chat(body.text.strip(), body.selected, body.part_id)
         except Exception as error:

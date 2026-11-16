@@ -20,10 +20,15 @@ const mm = (metres: number) => `${Math.round(metres * 1000)} mm`;
 /** What the suggestion on the start screen asks for. */
 const SUGGESTION = "Prepare me on the blood supply of the heart";
 
-/** Ask the backend for a session on what the student typed, with their notes if they attached any. */
+/** Select what the tutor's answer points to, unless the student already has something selected. */
+function selectIfNothing(pointTo: string[]): void {
+  if (pointTo.length > 0 && selectionStore.getState().selected.length === 0) selectionStore.set(pointTo);
+}
+
+/** Ask the backend for a session on what the student typed, with their notes if they attached any. Empty: just explore. */
 function startSession(request: string, notes: File | null): void {
   selectionStore.clear();
-  void liveSessions.start(request, notes);
+  void liveSessions.start(request, notes).then(selectIfNothing);
 }
 
 /** Play the sample held in the app itself, with no backend. The way out when the backend can't be reached. */
@@ -207,11 +212,13 @@ function SummaryCard({ state }: { state: PlayerState }) {
   );
 }
 
-/** Send what the student typed mid-session, with what they have selected, and select what the answer points to. */
+/**
+ * Send what the student typed mid-session, with what they have selected. What the answer
+ * points to is selected only if they had nothing selected; otherwise their selection stays
+ * and the answer offers "Show on model".
+ */
 function sendChat(text: string): void {
-  void liveSessions.chat(text, selectionStore.getState().selected).then((pointTo) => {
-    if (pointTo.length > 0) selectionStore.set(pointTo);
-  });
+  void liveSessions.chat(text, selectionStore.getState().selected).then(selectIfNothing);
 }
 
 /**
@@ -225,7 +232,13 @@ function Composer({ inSession, busy, onReply }: { inSession: boolean; busy: bool
   const [notes, setNotes] = useState<File | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const blocked = (inSession && !onReply) || busy;
-  const label = inSession ? (onReply ? "Ask the tutor, or ask to go another way" : "The built-in sample can't answer questions") : onReply ? "Answer the tutor" : "What do you need to be ready for?";
+  const label = inSession
+    ? onReply
+      ? "Ask the tutor, or ask to go another way"
+      : "The built-in sample can't answer questions"
+    : onReply
+      ? "Answer the tutor"
+      : "What do you need to be ready for?";
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -270,16 +283,19 @@ function Composer({ inSession, busy, onReply }: { inSession: boolean; busy: bool
             <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.8 1.8 0 0 1-2.6-2.6l8.1-8.1" />
           </svg>
         </button>
-        <input
-          type="text"
-          value={text}
-          disabled={blocked}
-          onChange={(event) => setText(event.target.value)}
-          placeholder={label}
-          aria-label={label}
-        />
+        <input type="text" value={text} disabled={blocked} onChange={(event) => setText(event.target.value)} placeholder={label} aria-label={label} />
         <button type="submit" className="composer-send" disabled={blocked || text.trim() === ""} aria-label={onReply ? "Send" : "Start the session"}>
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
             <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>
         </button>
@@ -308,6 +324,9 @@ function StartScreen({ state }: { state: PlayerState }) {
       <p>Tell the tutor a topic. It builds a study session on the model: it shows, asks you to click where, and explains from your notes and the atlas.</p>
       <button type="button" className="thread-suggestion" disabled={state.pending} onClick={() => startSession(SUGGESTION, null)}>
         Blood supply of the heart
+      </button>
+      <button type="button" className="thread-suggestion" disabled={state.pending} onClick={() => startSession("", null)}>
+        Just explore the model
       </button>
       {state.pending && (
         <p className="thread-status" role="status">
@@ -340,16 +359,22 @@ function MessageView({ message }: { message: SessionMessage }) {
   return (
     <article className="thread-card thread-card-open">
       <p className="thread-kind">Tutor</p>
+      {message.text && <p>{message.text}</p>}
       {message.statements.map((statement, i) => (
         <StatementView statement={statement} key={i} />
       ))}
+      {message.pointTo && message.pointTo.length > 0 && (
+        <button type="button" className="thread-link" onClick={() => selectionStore.set(message.pointTo!)}>
+          Show on model
+        </button>
+      )}
     </article>
   );
 }
 
 /** Before the plan: the tutor's questions and the student's answers, with the open question's answers as buttons. */
 function Conversation({ asking, state }: { asking: Asking; state: PlayerState }) {
-  const reply = (text: string) => void liveSessions.reply(text);
+  const reply = (text: string) => void liveSessions.reply(text).then(selectIfNothing);
   return (
     <aside className="thread" aria-label="Study session">
       <header className="thread-header">
@@ -378,7 +403,7 @@ function Conversation({ asking, state }: { asking: Asking; state: PlayerState })
           ))}
         {state.pending && (
           <p className="thread-status" role="status">
-            The tutor is planning from your answer. This can take a minute…
+            The tutor is thinking about your answer. This can take a minute…
           </p>
         )}
         {state.error && (
@@ -419,50 +444,70 @@ export default function SessionThread() {
   const reachedSummary = state.reached >= total && session.summary !== null;
   const shown = session.parts.slice(0, Math.min(state.reached, session.parts.length - 1) + 1);
   const next = () => void liveSessions.advance();
+  // No plan: the student is exploring, asking about what they select. A plan may arrive later.
+  const exploring = total === 0;
+  const early = state.messages.filter((message) => message.after === -1);
 
   return (
     <aside className="thread" aria-label="Study session">
       <header className="thread-header">
         <h2>{session.request}</h2>
         <p>
-          {atSummary ? "Summary" : `Part ${Math.min(index + 1, total)} of ${total}`} · {state.live ? "from the backend" : "built-in sample"}
+          {exploring
+            ? "Exploring · select structures and ask about them"
+            : `${atSummary ? "Summary" : `Part ${Math.min(index + 1, total)} of ${total}`} · ${state.live ? "from the backend" : "built-in sample"}`}
         </p>
       </header>
 
       <div className="thread-scroll">
-        <p className="thread-bubble">{session.request}</p>
+        {/* What was said before any part: the request itself is among it, so it isn't shown twice. */}
+        {early.length === 0 && !exploring && <p className="thread-bubble">{session.request}</p>}
+        {exploring && early.length === 0 && (
+          <article className="thread-card thread-card-open">
+            <p className="thread-kind">Explore</p>
+            <p>
+              Click a structure on the model, Shift- or ⌘-click to add more, and ask about them below. Ask to be quizzed or taken through a topic whenever you
+              like.
+            </p>
+          </article>
+        )}
+        {early.map((message, i) => (
+          <MessageView message={message} key={i} />
+        ))}
 
-        <article className="thread-card thread-card-open">
-          <p className="thread-kind">Plan</p>
-          <ol className="thread-plan">
-            {session.plan.map((item, step) => (
-              <li key={item.part_id} data-done={step < index} aria-current={step === index ? "step" : undefined}>
-                {item.title}
-              </li>
-            ))}
-          </ol>
-          <details className="thread-scope">
-            <summary>What the model can and can't show</summary>
-            <h4>On the model</h4>
-            <ul className="thread-list">
-              {session.scope.can_show.map((line) => (
-                <li key={line}>{line}</li>
+        {!exploring && (
+          <article className="thread-card thread-card-open">
+            <p className="thread-kind">Plan</p>
+            <ol className="thread-plan">
+              {session.plan.map((item, step) => (
+                <li key={item.part_id} data-done={step < index} aria-current={step === index ? "step" : undefined}>
+                  {item.title}
+                </li>
               ))}
-            </ul>
-            <h4>In words only</h4>
-            <ul className="thread-list">
-              {session.scope.words_only.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          </details>
-        </article>
+            </ol>
+            <details className="thread-scope">
+              <summary>What the model can and can't show</summary>
+              <h4>On the model</h4>
+              <ul className="thread-list">
+                {session.scope.can_show.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              <h4>In words only</h4>
+              <ul className="thread-list">
+                {session.scope.words_only.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </details>
+          </article>
+        )}
 
         {shown.map((part, step) => (
           <Fragment key={part.id}>
             <PartCard part={part} step={step} state={state} />
             {state.messages
-              .filter((message) => Math.min(message.after, shown.length - 1) === step)
+              .filter((message) => message.after >= 0 && Math.min(message.after, shown.length - 1) === step)
               .map((message, i) => (
                 <MessageView message={message} key={i} />
               ))}
@@ -478,7 +523,11 @@ export default function SessionThread() {
           ))}
         {state.pending && (
           <p className="thread-status" role="status">
-            {state.messages.at(-1)?.from === "student" ? "The tutor is answering…" : session.parts.length === 0 ? "Preparing the first part…" : "Preparing what comes next…"}
+            {state.messages.at(-1)?.from === "student"
+              ? "The tutor is answering…"
+              : session.parts.length === 0
+                ? "Preparing the first part…"
+                : "Preparing what comes next…"}
           </p>
         )}
         {state.error && (
@@ -488,20 +537,28 @@ export default function SessionThread() {
         )}
       </div>
 
-      <nav className="thread-nav" aria-label="Move through the session">
-        <button type="button" disabled={index === 0 || state.pending} onClick={() => playerStore.back()}>
-          Back
-        </button>
-        {atSummary ? (
-          <button type="button" className="thread-primary" onClick={() => playerStore.close()}>
+      {exploring ? (
+        <nav className="thread-nav" aria-label="Leave">
+          <button type="button" onClick={() => playerStore.close()}>
             Finish
           </button>
-        ) : (
-          <button type="button" className={waiting ? undefined : "thread-primary"} disabled={state.pending} onClick={next}>
-            {state.pending ? "Loading…" : state.error ? "Try again" : waiting ? "Skip" : index === total - 1 ? "See the summary" : "Next"}
+        </nav>
+      ) : (
+        <nav className="thread-nav" aria-label="Move through the session">
+          <button type="button" disabled={index === 0 || state.pending} onClick={() => playerStore.back()}>
+            Back
           </button>
-        )}
-      </nav>
+          {atSummary ? (
+            <button type="button" className="thread-primary" onClick={() => playerStore.close()}>
+              Finish
+            </button>
+          ) : (
+            <button type="button" className={waiting ? undefined : "thread-primary"} disabled={state.pending} onClick={next}>
+              {state.pending ? "Loading…" : state.error ? "Try again" : waiting ? "Skip" : index === total - 1 ? "See the summary" : "Next"}
+            </button>
+          )}
+        </nav>
+      )}
       <Composer inSession busy={state.pending} onReply={state.live ? sendChat : undefined} />
     </aside>
   );
