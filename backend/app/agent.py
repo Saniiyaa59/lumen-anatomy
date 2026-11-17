@@ -13,19 +13,24 @@ When a part fails a check, Claude is told exactly which field and why, and
 tries again. After a few failures the part is given up on.
 """
 
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Sequence
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from app import measure
-from app.agent_tools import ANSWER_STUDENT_TOOL, ASK_STUDENT_TOOL, DECIDE_TOOL, LOOKUP_TOOLS, SUBMIT_PART_TOOLS, SUBMIT_PLAN_TOOL, SUBMIT_SUMMARY_TOOL, run_lookup
+from app import measure, notes
+from app.agent_tools import ANSWER_STUDENT_TOOL, ASK_STUDENT_TOOL, DECIDE_TOOL, LOOKUP_TOOLS, MUST_SEE, SUBMIT_PART_TOOLS, SUBMIT_PLAN_TOOL, SUBMIT_SUMMARY_TOOL, run_lookup
 from app.articles import Articles
 from app.llm import LLM, Usage
 from app.region import Region
 from app.session_check import check_part
 from app.session_schemas import ClickAnswer, ClickCase, DamageSlider, Demonstration, Part, PartKind, Pulse, Scope, Source, Statement
+
+# Shown in the terminal the backend runs in, next to uvicorn's own lines.
+log = logging.getLogger("uvicorn.error")
 
 MAX_TURNS = 24  # requests to Claude for one piece of work, lookups included
 MAX_HAND_INS = 4  # times one part may be handed in before it is given up on
@@ -34,8 +39,6 @@ MAX_QUESTIONS = 2  # questions the tutor may ask before it must plan
 MIN_QUOTE_CHARS = 20
 CLICK_TOLERANCE = 0.002  # metres past the end of an answer region that still count
 
-# How much of a part's subject must be visible in its opening view.
-MUST_SEE = {"click_case": 0.9, "damage_slider": 0.6, "pulse": 0.5, "demonstration": 0.3}
 
 PART_ADAPTER: TypeAdapter[Part] = TypeAdapter(Part)
 
@@ -63,9 +66,10 @@ What this model cannot show: which part of an organ's wall a vessel supplies (th
 1. Never state a distance, the order of branches, or what lies beyond a point from memory. Ask the tools. All distances are metres.
 2. Every statement the student reads needs a source:
    - atlas: the article's key and a quote copied word for word from it that says what your statement says. Search, then read the article, then quote.
-   - notes: the number of a fact from the student's notes, when notes were given. Prefer the notes. If the notes and the atlas disagree, follow the notes and say that they differ.
+   - notes: when the student gave notes, either the number of a fact listed from them, or a page and a quote copied word for word from that page. Look in the notes before the atlas: search_notes finds what the listed facts left out, and read_notes_page gives a whole page. Prefer the notes. If the notes and the atlas disagree, follow the notes and say that they differ.
    - model: only for what you measured with the tools, such as a length or where a branch leaves.
-3. The student must be able to see what a part is about when it opens. Use `what_hides` to choose the side to look from and what to hide. For a click case the whole answer must be visible. Hide as little as will do: try another side before hiding a chamber that a vessel lies on, because a vessel floating in space teaches less. Hiding veins, valve leaflets and the great vessels in front is fine.
+   A statement says only what its source says. Don't add to it what the session will do next, what a later part covers, or a fact from somewhere else: give a further fact its own statement and source, and leave remarks about the session out, since every statement must have a source.
+3. The student must be able to see what a part is about when it opens. The code sees to this: leave `view.side` out, put in `view.look_at` what the camera should frame, and the code picks the side and adds what is in front to `hide`. It never hides the part's subject, and hides what you frame only when it must. Don't mention the side in what you write unless you chose it with `find_view`. Give a side yourself only to insist on it; if too little shows from there, the code picks another.
 4. A click case needs exactly one right place. Give findings that only that place explains, and check with `beyond` that they match what the model shows. Add near misses for the wrong clicks a student is likely to make, each with its own short explanation. A near miss may not overlap the answer.
 
 # Writing
@@ -143,6 +147,8 @@ class Brief:
 
     request: str
     facts: list[NoteFact] = field(default_factory=list)
+    notes_file: str | None = None  # the notes' file name, when the student gave notes
+    pages: list[str] = field(default_factory=list)  # the text of each page of the notes, for search_notes; empty if it couldn't be read
     conversation: list[Turn] = field(default_factory=list)  # what the tutor and student said, oldest first
     scope: Scope | None = None
     plan: list[PlannedPart] = field(default_factory=list)
@@ -188,53 +194,117 @@ class Agent:
 
     # Talking to Claude
 
-    def _ask(self, messages: list[dict], tools: list[dict] | None = None) -> Any:
+    def _ask(self, messages: list[dict], tools: list[dict] | None = None) -> tuple[Any, float]:
+        """One request. Returns Claude's reply and how many seconds it took."""
+        started = time.monotonic()
         response = self.llm.ask(system=self.system, messages=messages, tools=tools)
-        self.usage.add(getattr(response, "usage", None))
-        return response
+        seconds = time.monotonic() - started
+        self.usage.add(getattr(response, "usage", None), seconds)
+        return response, seconds
+
+    def _timed(self, stage: str, response: Any, claude: float, here: float, did: str) -> None:
+        """Note how long one request took, and what came of it, in the session's usage and the terminal.
+
+        `claude` is the wait for Claude; `here` is the backend's own work on the reply
+        (lookups, checking a hand-in). `did` says what the reply was: lookups (and
+        which), a hand-in that was accepted or rejected, or text with no tool call.
+        """
+        used = getattr(response, "usage", None)
+        output = getattr(used, "output_tokens", 0) or 0
+        fresh = getattr(used, "input_tokens", 0) or 0
+        cached = getattr(used, "cache_read_input_tokens", 0) or 0
+        written = getattr(used, "cache_creation_input_tokens", 0) or 0
+        total = fresh + cached + written
+        timing = {
+            "at": round(time.time(), 2),  # when the reply came, so overlapping builders can be lined up
+            "stage": stage,
+            "claude_seconds": round(claude, 2),
+            "here_seconds": round(here, 2),
+            "did": did,
+            "output_tokens": output,
+            "input_tokens": total,
+            "cached_share": round(cached / total, 2) if total else 0.0,
+        }
+        self.usage.record(timing)
+        log.info(
+            "claude %5.1fs + here %4.1fs | %s | %s | out %s tok, in %s tok (%d%% cached)",
+            claude, here, stage, did, f"{output:,}", f"{total:,}", round(100 * timing["cached_share"]),
+        )
 
     def _work(
-        self, task: str, hand_in: dict[str, Any], accept: Callable[[dict], Any], also: Sequence[tuple[dict[str, Any], Callable[[dict], Any]]] = ()
+        self,
+        task: str,
+        hand_in: dict[str, Any],
+        accept: Callable[[dict], Any],
+        also: Sequence[tuple[dict[str, Any], Callable[[dict], Any]]] = (),
+        stage: str | None = None,
+        brief: "Brief | None" = None,
     ) -> Any:
         """Let Claude work on a task with the lookup tools until what it hands in is accepted.
 
         `also` offers other ways to finish, each with its own check. The main hand-in
-        stays last in the tool list.
+        stays last in the tool list. `stage` names the task in the timings (the
+        hand-in tool's name if not given). `brief` gives the lookups the student's notes.
         """
+        stage = stage or hand_in["name"]
         accepts = {hand_in["name"]: accept, **{tool["name"]: check for tool, check in also}}
         tools = [*LOOKUP_TOOLS, *(tool for tool, _ in also), hand_in]
         finish = " or ".join(accepts)
         messages: list[dict] = [{"role": "user", "content": task}]
         problems = ["nothing was handed in"]
         hand_ins = 0
-        for _ in range(MAX_TURNS):
-            response = self._ask(messages, tools)
+        began = time.monotonic()
+        claude_total = 0.0
+
+        def done(how: str, requests: int) -> None:
+            took = time.monotonic() - began
+            rejected = hand_ins - 1 if how == "accepted" else hand_ins
+            log.info("%s: %s after %d requests, %.1fs (Claude %.1fs, here %.1fs, %d rejected)", stage, how, requests, took, claude_total, took - claude_total, rejected)
+
+        for turn in range(1, MAX_TURNS + 1):
+            response, claude = self._ask(messages, tools)
+            claude_total += claude
+            handled = time.monotonic()
             messages.append({"role": "assistant", "content": response.content})
             calls = [block for block in response.content if block.type == "tool_use"]
             if not calls:
+                self._timed(stage, response, claude, time.monotonic() - handled, "text, no tool call")
                 messages.append({"role": "user", "content": f"Finish by calling {finish}."})
                 continue
             results = []
+            lookups = []
             for call in calls:
                 failed = False
                 if call.name in accepts:
                     hand_ins += 1
                     try:
-                        return accepts[call.name](call.input)
+                        accepted = accepts[call.name](call.input)
                     except _Rejected as rejected:
                         problems = rejected.problems
                         content = "Not accepted. Fix these and hand it in again:\n- " + "\n- ".join(problems)
                         failed = True
+                    else:
+                        self._timed(stage, response, claude, time.monotonic() - handled, f"{call.name} accepted")
+                        done("accepted", turn)
+                        return accepted
                 else:
+                    lookups.append(call.name)
                     try:
-                        content = run_lookup(call.name, call.input, self.region, self.articles)
+                        content = run_lookup(call.name, call.input, self.region, self.articles, brief.pages if brief else [])
                     except (ValueError, TypeError) as error:
                         content, failed = str(error), True
                 results.append({"type": "tool_result", "tool_use_id": call.id, "content": content, **({"is_error": True} if failed else {})})
+            did = [f"lookups: {', '.join(lookups)}"] if lookups else []
+            # What was wrong, cut short: enough to see in the timings which checks cost retries.
+            why = "; ".join(problem if len(problem) <= 160 else problem[:157] + "..." for problem in problems[:3])
+            did += [f"{name} rejected: {why}" for name in (c.name for c in calls) if name in accepts]
+            self._timed(stage, response, claude, time.monotonic() - handled, "; ".join(did))
             if hand_ins >= MAX_HAND_INS:
+                done("given up", turn)
                 raise AgentError(problems)
             # Every result of a turn goes back in one message.
             messages.append({"role": "user", "content": results})
+        done("ran out of turns", MAX_TURNS)
         raise AgentError(["ran out of turns", *problems])
 
     def _background(self, brief: Brief) -> str:
@@ -247,7 +317,9 @@ class Agent:
         if brief.facts:
             lines.append("Facts from the student's notes (cite one as source type notes with its number):")
             lines += [f"{fact.number}. {fact.text} (page {fact.page})" for fact in brief.facts]
-        else:
+        if brief.pages:
+            lines.append(f"The notes have {len(brief.pages)} pages. Search them with search_notes for anything these facts leave out.")
+        if not brief.facts and not brief.pages:
             lines.append("The student gave no notes that could be read. Use the atlas.")
         if brief.plan:
             lines += ["", "The plan:"]
@@ -263,7 +335,7 @@ class Agent:
 
     def read_notes(self, request: str, pdf_base64: str, filename: str) -> list[NoteFact]:
         """Have Claude pull the relevant facts out of the notes. The API attaches the page and the exact text each fact rests on."""
-        response = self._ask(
+        response, claude = self._ask(
             [
                 {
                     "role": "user",
@@ -291,6 +363,7 @@ class Agent:
             facts.append(NoteFact(number=len(facts) + 1, text=text, file=filename, page=cited[0].start_page_number, quote=cited[0].cited_text))
             if len(facts) >= MAX_NOTE_FACTS:
                 break
+        self._timed("notes", response, claude, 0.0, f"read {len(facts)} facts")
         return facts
 
     # Scope and plan
@@ -361,7 +434,7 @@ class Agent:
             return self._accept_answer(brief, {**raw, "new_plan": None})
 
         also = [(ASK_STUDENT_TOOL, accept_question)] if may_ask else []
-        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)])
+        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)], stage="plan", brief=brief)
 
     # Building a part
 
@@ -370,9 +443,9 @@ class Agent:
         task = (
             f"{self._background(brief)}\n\n"
             f'Build this part now: [{item.kind}] "{item.title}". What it should teach: {item.intent}\n\n'
-            f"Look up what you need, choose the view with `what_hides`, then hand it in with {SUBMIT_PART_TOOLS[item.kind]['name']}."
+            f"Look up what you need, making all the lookups you already know you need in the same turn, then hand it in with {SUBMIT_PART_TOOLS[item.kind]['name']}. Leave view.side out: the code chooses the view."
         )
-        return self._work(task, SUBMIT_PART_TOOLS[item.kind], lambda raw: self._accept_part(brief, item, raw))
+        return self._work(task, SUBMIT_PART_TOOLS[item.kind], lambda raw: self._accept_part(brief, item, raw), stage=f"part {item.part_id}", brief=brief)
 
     def _source(self, brief: Brief, evidence: Any, path: str, problems: list[str]) -> dict | None:
         """Turn the agent's evidence for a statement into a session source, or record why it is not good enough."""
@@ -380,6 +453,19 @@ class Agent:
         if kind == "model":
             return {"type": "model"}
         if kind == "notes":
+            if evidence.get("page") is not None:
+                page, quote = evidence.get("page"), str(evidence.get("quote", ""))
+                if not brief.pages:
+                    problems.append(f"{path}.page: the notes' pages can't be quoted in this session; cite a fact by its number")
+                elif not isinstance(page, int) or not 1 <= page <= len(brief.pages):
+                    problems.append(f"{path}.page: the notes have pages 1 to {len(brief.pages)}")
+                elif len(quote.strip()) < MIN_QUOTE_CHARS:
+                    problems.append(f"{path}.quote: give a full sentence copied from that page of the notes")
+                elif not notes.quoted_on(brief.pages, page, quote):
+                    problems.append(f"{path}.quote: this is not on page {page} of the notes word for word; read the page with read_notes_page and copy the sentence exactly")
+                else:
+                    return {"type": "notes", "file": brief.notes_file or "notes.pdf", "page": page}
+                return None
             fact = next((f for f in brief.facts if f.number == evidence.get("fact")), None)
             if fact is None:
                 problems.append(f"{path}.fact: there is no notes fact with that number")
@@ -417,6 +503,8 @@ class Agent:
         # The title is the one the student already saw in the plan, whatever the agent calls the part now.
         draft.update(id=item.part_id, kind=item.kind, title=item.title)
         draft.setdefault("statements", [])  # a case tells its story in its own fields
+        if isinstance(draft.get("view"), dict):
+            draft["view"].setdefault("side", None)  # left out: the code chooses it below
         if item.kind == "click_case" and isinstance(draft.get("answer"), dict):
             draft["answer"]["tolerance"] = CLICK_TOLERANCE
         try:
@@ -426,14 +514,29 @@ class Agent:
             shape = [f"{'.'.join(['part', *(str(step) for step in e['loc'][1:])])}: {e['msg']}" for e in error.errors()]
             raise _Rejected([*problems, *shape]) from None
         problems += check_part(part, self.region, self.articles)
+        if isinstance(part, ClickCase):
+            # A whole vessel in the answer makes a click anywhere on it right, so the stretch means nothing.
+            vessels = {self.region.vessel_of(r.piece) for r in part.answer.regions if r.piece in self.region.pieces}  # an unknown piece is reported above
+            problems += [
+                f"part.answer.structures: {structure_id} is the vessel the answer's regions lie on, so listing it makes a click anywhere on it right. Leave it out and let the regions say where."
+                for structure_id in part.answer.structures
+                if structure_id in vessels
+            ]
         if not problems:
-            problems += self._seeing_problems(part)
+            part, seeing = self._settle_view(part)
+            problems += seeing
         if problems:
             raise _Rejected(problems)
         return part
 
-    def _seeing_problems(self, part: Part) -> list[str]:
-        """Why the student could not see what this part is about when it opens, if they couldn't."""
+    def _settle_view(self, part: Part) -> tuple[Part, list[str]]:
+        """Make sure the student can see what this part is about when it opens.
+
+        A side the agent gave is kept if enough shows from it with its hide list.
+        Otherwise, or when it gave none, the code chooses the side and adds to the
+        hide list (measure.choose_view), preferring the agent's side. Returns the
+        part, with its view settled, and the problems if no side shows enough.
+        """
         stretches: list[measure.Stretch] = []
         structures: list[str] = []
         if isinstance(part, ClickCase):
@@ -454,19 +557,25 @@ class Agent:
             structures = list(part.highlight)
             what = "the highlighted structures"
         if not stretches and not structures:
-            return []
-        if part.view.side is None:
-            return ["part.view.side: choose a side, so that what the part is about is known to be visible"]
-        seen = measure.what_hides(
-            self.region, stretches=stretches, structures=structures, look_at=part.view.look_at, hidden=part.hide, sides=[part.view.side]
-        ).sides[0]
-        if seen.visible >= MUST_SEE[part.kind]:
-            return []
-        blockers = ", ".join(f"{b.structure} ({b.share:.0%})" for b in seen.blockers[:4])
-        return [
-            f"part.view: only {seen.visible:.0%} of {what} can be seen from the {part.view.side} with this hide list. "
-            f"In front of it: {blockers}. Hide what is in front, or use what_hides to find a better side."
-        ]
+            return part, []
+        need = MUST_SEE[part.kind]
+        given = part.view.side
+        if given is not None:
+            seen = measure.what_hides(self.region, stretches=stretches, structures=structures, look_at=part.view.look_at, hidden=part.hide, sides=[given])
+            if seen.sides[0].visible >= need:
+                return part, []
+        choice = measure.choose_view(self.region, need, stretches=stretches, structures=structures, look_at=part.view.look_at, hidden=part.hide, prefer=given)
+        if choice.side is None:
+            best = choice.sides[0]
+            stuck = ", ".join(best.still_in_front) or "nothing that may be hidden"
+            return part, [
+                f"part.view: {what} can't be seen well enough from any side ({need:.0%} must show). "
+                f"The best is the {best.side}, showing {best.visible:.0%} even after hiding {', '.join(best.added) or 'nothing'}. "
+                f"Still in front: {stuck}, which is part of what the part is about and so is never hidden. Make the subject smaller: fewer structures, or a stretch of a vessel instead of the whole of it."
+            ]
+        log.info("%s: view chosen by the code: %s%s, hiding %s (%.0f%% shows)", part.id, choice.side, f" (asked for {given})" if given and given != choice.side else "", choice.added or "nothing more", 100 * choice.visible)
+        settled = part.model_copy(update={"view": part.view.model_copy(update={"side": choice.side}), "hide": choice.hide})
+        return settled, []
 
     # Talking with the student mid-session
 
@@ -492,7 +601,7 @@ class Agent:
             "give new_plan: it replaces every part they have not been given yet. Otherwise leave the plan alone. "
             "If there is no plan yet, they are exploring the model: give new_plan only when they ask to be taught, prepared or quizzed."
         )
-        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw))
+        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw), stage="chat", brief=brief)
 
     def _accept_answer(self, brief: Brief, raw: dict) -> ChatAnswer:
         """Check an answer to the student: its statements' sources, what it points to, and any new plan."""
@@ -552,7 +661,7 @@ class Agent:
             part_id = next(c for c in (f"extra{n}-{_slug(title)}" for n in range(1, 99)) if c not in taken)
             return PlannedPart(part_id, title, extra["kind"], f"{str(extra.get('intent', '')).strip()} (Added because: {str(raw.get('reason', '')).strip()})")
 
-        return self._work(task, DECIDE_TOOL, accept)
+        return self._work(task, DECIDE_TOOL, accept, stage=f"decide after {case.id}", brief=brief)
 
     # Closing
 
@@ -579,7 +688,7 @@ class Agent:
                 raise _Rejected(["give at least one phrase in solid or shaky"])
             return solid, shaky
 
-        return self._work(task, SUBMIT_SUMMARY_TOOL, accept)
+        return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary", brief=brief)
 
 
 def sources_used(parts: list[Part]) -> list[Source]:

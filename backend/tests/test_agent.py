@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app import sessions
+from app import measure, sessions
 from app.agent import MAX_HAND_INS, Agent, AgentError, Brief, NoteFact, PlannedPart, Turn, sources_used
 from app.agent_tools import LOOKUP_TOOLS, SUBMIT_PART_TOOLS, run_lookup
 from app.articles import get_articles
@@ -78,6 +78,7 @@ def demo_draft(title="Where the right coronary artery runs"):
     }
 
 
+CHAMBERS = ["left_atrium", "left_ventricle", "right_atrium", "right_ventricle"]
 CASE_ITEM = PlannedPart("p2-case", "Case: find the blockage", "click_case", "Place a blockage before the first septal branch.")
 DEMO_ITEM = PlannedPart("p1-demo", "Where the right coronary artery runs", "demonstration", "Show its course.")
 
@@ -144,8 +145,9 @@ def test_every_lookup_tool_runs_on_the_heart_and_writes_stretches_as_a_session_d
     assert set(cut["stretches"][0]) == {"piece", "from", "to"}
     path = json.loads(run_lookup("route", {"from_piece": f"{LCA}.0", "from_at": 0, "to_piece": f"{CIRCUMFLEX}.0", "to_at": 0.05}, region, articles))
     assert len(path["segments"]) == 2
-    seen = json.loads(run_lookup("what_hides", {"stretches": [{"piece": f"{LAD}.0", "from": 0, "to": 0.0465}], "sides": ["left"]}, region, articles))
-    assert seen["sides"][0]["blockers"][0]["structure"] == "left_atrium"
+    view = json.loads(run_lookup("find_view", {"kind": "click_case", "stretches": [{"piece": f"{LAD}.0", "from": 0, "to": 0.0465}]}, region, articles))
+    assert view["side"] == "left" and "left_atrium" in view["added"] and view["visible"] >= 0.9
+    assert len(view["sides"]) == 3  # only the best few, to keep the reply short
     found = json.loads(run_lookup("search_articles", {"query": "coronary dominance"}, region, articles))
     assert found[0]["article"] == "Coronary circulation"
     read = json.loads(run_lookup("read_article", {"article": "Left coronary artery"}, region, articles))
@@ -204,6 +206,13 @@ def test_plan_looks_things_up_then_hands_in_a_plan():
     # The plan with too few parts was sent back with the reason.
     rejected = llm.asked[2][1][-1]["content"][0]
     assert rejected["is_error"] is True and "between two and five" in rejected["content"]
+    # Every request was timed and labelled with what came of it.
+    timings = agent.usage.timings
+    assert [t["stage"] for t in timings] == ["plan"] * 3
+    assert [t["did"] for t in timings] == ["lookups: describe, branches_of", "submit_plan rejected: parts: plan between two and five parts", "submit_plan accepted"]
+    assert all(t["claude_seconds"] >= 0 and t["here_seconds"] >= 0 for t in timings)
+    assert timings[0]["output_tokens"] == 200 and timings[0]["input_tokens"] == 1000
+    assert agent.usage.claude_seconds >= 0
 
 
 def test_the_instructions_list_the_model_and_the_task_carries_the_request_and_notes():
@@ -247,7 +256,9 @@ def test_a_sound_case_is_accepted_and_finished_off_by_code():
         (lambda d: d["feedback"]["near_misses"][0]["regions"][0].update(to=0.6), "is not a stretch of the piece"),
         (lambda d: d.pop("question"), "part.question"),
         (lambda d: d["feedback"]["near_misses"][0]["regions"][0].update({"from": 0.03}), "overlaps the correct answer"),
-        (lambda d: (d["view"].update(side="anterior"), d.update(hide=[])), "of the answer can be seen from the anterior"),
+        # The chambers cover each other, and the subject is never hidden, so no side shows 90% of them.
+        (lambda d: (d["answer"].update(regions=[], structures=CHAMBERS), d["feedback"].update(near_misses=[])), "can't be seen well enough from any side"),
+        (lambda d: d["answer"]["structures"].append(LAD), "makes a click anywhere on it right"),
     ],
 )
 def test_a_flawed_case_is_sent_back_with_the_reason_and_the_fix_is_accepted(spoil, reason):
@@ -262,13 +273,29 @@ def test_a_flawed_case_is_sent_back_with_the_reason_and_the_fix_is_accepted(spoi
     assert reason in sent_back["content"]
 
 
-def test_a_hidden_answer_is_sent_back_with_what_is_in_front_of_it():
+def test_a_view_that_hides_the_answer_is_fixed_by_code_without_another_request():
     flawed = case_draft()
-    flawed["hide"] = []
-    agent, llm = agent_with(submit_click_case=[reply(call("submit_click_case", **flawed)), reply(call("submit_click_case", **case_draft()))])
-    agent.build(Brief(request="x"), CASE_ITEM)
-    message = llm.last_results("submit_click_case")[0]["content"]
-    assert "left_atrium" in message and "what_hides" in message
+    flawed["view"]["side"], flawed["hide"] = "anterior", []
+    agent, llm = agent_with(submit_click_case=[reply(call("submit_click_case", **flawed))])
+    part = agent.build(Brief(request="x"), CASE_ITEM)
+
+    assert len(llm.asked) == 1
+    assert "left_atrium" in part.hide
+    stretch = part.answer.regions[0]
+    seen = measure.what_hides(region, stretches=[measure.Stretch(piece=stretch.piece, start=stretch.start, to=stretch.to)], look_at=part.view.look_at, hidden=part.hide, sides=[part.view.side])
+    assert seen.sides[0].visible >= 0.9
+
+
+def test_a_part_handed_in_without_a_side_gets_one_and_a_good_side_is_kept():
+    no_side = case_draft()
+    del no_side["view"]["side"]
+    no_side["hide"] = []
+    agent, _ = agent_with(submit_click_case=[reply(call("submit_click_case", **no_side)), reply(call("submit_click_case", **case_draft()))])
+    chosen = agent.build(Brief(request="x"), CASE_ITEM)
+    assert chosen.view.side is not None and chosen.hide
+
+    kept = agent.build(Brief(request="x"), CASE_ITEM)
+    assert (kept.view.side, kept.hide) == ("left", ["left_atrium", "pulmonary_trunk", "cardiac_veins"])
 
 
 def test_a_part_that_keeps_failing_is_given_up_on():
@@ -280,13 +307,15 @@ def test_a_part_that_keeps_failing_is_given_up_on():
     assert len(llm.asked) == MAX_HAND_INS
 
 
-def test_a_demonstration_is_built_and_one_whose_subject_is_covered_is_sent_back():
+def test_a_demonstration_whose_subject_is_covered_is_opened_up_from_the_side_asked_for():
     covered = demo_draft()
     covered.update(highlight=["left_coronary_leaflet"], view={"look_at": ["left_coronary_leaflet"], "side": "superior"})
-    agent, llm = agent_with(submit_demonstration=[reply(call("submit_demonstration", **covered)), reply(call("submit_demonstration", **demo_draft()))])
+    agent, llm = agent_with(submit_demonstration=[reply(call("submit_demonstration", **covered))])
     part = agent.build(Brief(request="x"), DEMO_ITEM)
-    assert isinstance(part, Demonstration) and part.highlight == [RCA]
-    assert "of the highlighted structures can be seen from the superior" in llm.last_results("submit_demonstration")[0]["content"]
+    assert isinstance(part, Demonstration) and part.highlight == ["left_coronary_leaflet"]
+    # The great vessels above the leaflet are hidden; the side asked for still works, so it is kept.
+    assert part.view.side == "superior" and "ascending_aorta" in part.hide
+    assert len(llm.asked) == 1
 
 
 def test_a_pulse_and_a_slider_are_checked_too():
@@ -486,6 +515,26 @@ def test_a_session_built_by_the_agent_runs_through_the_requests(scripted_session
     assert state["claude_calls"] == 6 and state["input_tokens"] == 6000 and state["output_tokens"] == 1200
 
 
+def test_the_next_two_parts_are_built_side_by_side(scripted_sessions):
+    three = {**PLAN, "parts": [*PLAN["parts"], {"title": "Where the septal branches leave", "kind": "demonstration", "intent": "Show the first one."}]}
+    scripted_sessions(
+        submit_plan=[reply(call("submit_plan", **three))],
+        submit_demonstration=[reply(call("submit_demonstration", **demo_draft())), reply(call("submit_demonstration", **demo_draft("Where the septal branches leave")))],
+        submit_click_case=[reply(call("submit_click_case", **case_draft()))],
+    )
+    session_id = client.post("/api/sessions", json={"request": "Prepare me"}).json()["session_id"]
+    tutor = sessions._sessions[session_id].tutor
+    ids = [item.part_id for item in tutor.brief.plan]
+    # While the student reads the plan, the first two parts are under way; the third waits.
+    assert list(tutor.building) == ids[:2]
+
+    client.post(f"/api/sessions/{session_id}/next")
+    # Handing out the first starts the third, so two are under way again.
+    assert list(tutor.building) == ids[1:]
+    titles = [client.post(f"/api/sessions/{session_id}/next").json()["part"]["title"] for _ in range(2)]
+    assert titles == ["Case: find the blockage", "Where the septal branches leave"]
+
+
 def test_a_case_answered_right_first_time_needs_no_decision(scripted_sessions):
     llm = scripted_sessions(
         submit_plan=[reply(call("submit_plan", **PLAN))],
@@ -618,7 +667,8 @@ def test_a_question_with_too_many_options_is_sent_back():
 def test_a_session_can_open_with_a_question_and_plan_after_the_reply(scripted_sessions):
     scripted_sessions(
         submit_plan=[ask(), reply(call("submit_plan", **VALVES_PLAN))],
-        submit_demonstration=[reply(call("submit_demonstration", **demo_draft()))],
+        # Both parts of the plan are built at once, as soon as it exists.
+        submit_demonstration=[reply(call("submit_demonstration", **demo_draft())), reply(call("submit_demonstration", **demo_draft()))],
     )
     opened = client.post("/api/sessions", json={"request": "teach me about the exam I have tmr"}).json()
     session_id = opened["session_id"]

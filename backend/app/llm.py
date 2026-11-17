@@ -6,7 +6,8 @@ replays scripted replies and no test ever spends money or needs a key.
 
 import logging
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import anthropic
@@ -27,22 +28,43 @@ class LLMError(Exception):
     """A request to Claude failed. The message is fit to show the student."""
 
 
+# Part builders run on their own threads and share one session's Usage.
+_usage_lock = threading.Lock()
+
+KEEP_TIMINGS = 200  # the most recent requests kept per session, so a long one doesn't grow without end
+
+
 @dataclass
 class Usage:
-    """Running totals for one session, so its cost can be seen."""
+    """Running totals for one session, so its cost and its waiting can be seen."""
 
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    claude_seconds: float = 0.0  # time spent waiting for Claude, summed over every request
+    # One entry per request, oldest first: see Agent._timed for the fields.
+    timings: list[dict[str, Any]] = field(default_factory=list)
 
-    def add(self, usage: Any) -> None:
-        self.calls += 1
-        self.input_tokens += getattr(usage, "input_tokens", 0) or 0
-        self.output_tokens += getattr(usage, "output_tokens", 0) or 0
-        self.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
-        self.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
+    def add(self, usage: Any, seconds: float = 0.0) -> None:
+        with _usage_lock:
+            self.calls += 1
+            self.input_tokens += getattr(usage, "input_tokens", 0) or 0
+            self.output_tokens += getattr(usage, "output_tokens", 0) or 0
+            self.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
+            self.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
+            self.claude_seconds += seconds
+
+    def record(self, timing: dict[str, Any]) -> None:
+        with _usage_lock:
+            self.timings.append(timing)
+            del self.timings[:-KEEP_TIMINGS]
+
+    def snapshot(self) -> dict[str, Any]:
+        """A copy safe to save or show while builders may still be adding to it."""
+        with _usage_lock:
+            return {**self.__dict__, "timings": [dict(t) for t in self.timings]}
 
 
 class LLM(Protocol):

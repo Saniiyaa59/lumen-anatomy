@@ -12,7 +12,7 @@ Every distance is in metres along a centre-line piece.
 import json
 from typing import Any
 
-from app import measure
+from app import measure, notes
 from app.articles import Articles
 from app.region import Region
 
@@ -26,6 +26,9 @@ _STRETCH = {
     "required": ["piece", "from", "to"],
 }
 _IDS = {"type": "array", "items": {"type": "string"}}
+
+# How much of a part's subject must show in its opening view, by kind of part.
+MUST_SEE = {"click_case": 0.9, "damage_slider": 0.6, "pulse": 0.5, "demonstration": 0.3}
 _SIDE = ["anterior", "posterior", "left", "right", "superior", "inferior"]
 
 LOOKUP_TOOLS: list[dict[str, Any]] = [
@@ -54,18 +57,37 @@ LOOKUP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "what_hides",
-        "description": "For each side of the body: how much of some stretches of vessel and/or whole structures the student can see, what is in front, and what else must be hidden to see all of it. Use it to choose a part's view.side and hide list. `look_at` is what the part frames; `hidden` is what the part already hides (structure or group ids).",
+        "name": "find_view",
+        "description": (
+            "The side to look from, and what to hide, so the student sees enough of what a part is about when it opens. "
+            "It tries every side and hides the cheapest things in front: veins, valve leaflets and the great vessels first, another artery next, "
+            "a chamber only when nothing else works. It never hides the subject, and hides what `look_at` frames only when it must. "
+            "You rarely need it: leave view.side out when you hand in a part and the same search fills in the side and adds to the hide list. "
+            "Call it only when what you write depends on the view, such as 'seen from behind'. "
+            "`kind` is the part's kind, which sets how much must show; the subject is `stretches` and/or `structures`; "
+            "`hidden` is what the part hides already."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "kind": {"type": "string", "enum": ["demonstration", "pulse", "damage_slider", "click_case"]},
                 "stretches": {"type": "array", "items": _STRETCH},
                 "structures": _IDS,
                 "look_at": _IDS,
                 "hidden": _IDS,
-                "sides": {"type": "array", "items": {"type": "string", "enum": _SIDE}},
             },
+            "required": ["kind"],
         },
+    },
+    {
+        "name": "search_notes",
+        "description": "Search the student's notes for some words. Returns the best-matching passages, each with its page. Use it before the atlas whenever the student gave notes, and to find what the facts listed from the notes leave out. Quote from what it returns, or read the whole page with read_notes_page.",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    },
+    {
+        "name": "read_notes_page",
+        "description": "The text of one page of the student's notes, counted from 1. Read it before quoting from it: a quote must be copied word for word.",
+        "input_schema": {"type": "object", "properties": {"page": {"type": "integer"}}, "required": ["page"]},
     },
     {
         "name": "search_articles",
@@ -98,9 +120,19 @@ def _dump(result: Any) -> str:
     return json.dumps(rename(data), separators=(",", ":"))
 
 
-def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articles) -> str:
-    """Run one lookup tool and return its result as text. Raises ValueError with a reason the agent can act on."""
+def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articles, pages: list[str] | None = None) -> str:
+    """Run one lookup tool and return its result as text. Raises ValueError with a reason the agent can act on.
+
+    `pages` is the text of each page of the student's notes, for the notes tools.
+    """
     try:
+        if name in ("search_notes", "read_notes_page") and not pages:
+            return "The student gave no notes whose text could be read. Use the facts listed from the notes, if any, or the atlas."
+        if name == "search_notes":
+            found = notes.search(pages or [], args["query"])
+            return _dump(found) if found else "Nothing in the notes matched. Try other words, or the words the notes might use."
+        if name == "read_notes_page":
+            return json.dumps({"page": args["page"], "text": notes.read_page(pages or [], int(args["page"]))})
         if name == "describe":
             return _dump(measure.describe(region, args["id"]))
         if name == "branches_of":
@@ -109,17 +141,19 @@ def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articl
             return _dump(measure.beyond(region, args["piece"], args["at"]))
         if name == "route":
             return _dump(measure.route(region, args["from_piece"], args["from_at"], args["to_piece"], args["to_at"]))
-        if name == "what_hides":
-            return _dump(
-                measure.what_hides(
-                    region,
-                    stretches=_stretches(args.get("stretches")),
-                    structures=args.get("structures"),
-                    look_at=args.get("look_at"),
-                    hidden=args.get("hidden"),
-                    sides=args.get("sides"),
-                )
+        if name == "find_view":
+            if args["kind"] not in MUST_SEE:
+                raise ValueError(f"kind must be one of {sorted(MUST_SEE)}")
+            choice = measure.choose_view(
+                region,
+                MUST_SEE[args["kind"]],
+                stretches=_stretches(args.get("stretches")),
+                structures=args.get("structures"),
+                look_at=args.get("look_at"),
+                hidden=args.get("hidden"),
             )
+            # The best three sides are enough to choose from, and keep the reply short.
+            return _dump(choice.model_copy(update={"sides": choice.sides[:3]}))
         if name == "search_articles":
             found = articles.search(args["query"], limit=5, prefer=region.article_keys)
             return _dump(found) if found else "No passage matched. Try other words."
@@ -140,12 +174,13 @@ def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articl
 
 _EVIDENCE = {
     "type": "object",
-    "description": "Where the statement comes from. atlas: give `article` and `quote`. notes: give `fact`. model: for something measured with the tools, give nothing more.",
+    "description": "Where the statement comes from. atlas: give `article` and `quote`. notes: give `fact`, or `page` and `quote`. model: for something measured with the tools, give nothing more.",
     "properties": {
         "type": {"type": "string", "enum": ["atlas", "notes", "model"]},
         "article": {"type": "string", "description": "atlas only: the article's key, as search_articles gives it"},
-        "quote": {"type": "string", "description": "atlas only: one or two sentences copied word for word from the article that say what the statement says"},
-        "fact": {"type": "integer", "description": "notes only: the number of the fact from the student's notes"},
+        "quote": {"type": "string", "description": "atlas, or notes with `page`: one or two sentences copied word for word from the article or the page that say what the statement says"},
+        "fact": {"type": "integer", "description": "notes only: the number of a fact listed from the student's notes"},
+        "page": {"type": "integer", "description": "notes only, in place of `fact`: the page of the notes the quote is on"},
     },
     "required": ["type"],
 }
@@ -158,9 +193,9 @@ _STATEMENTS = {"type": "array", "items": _STATEMENT}
 _PLACE = {"type": "object", "properties": {"piece": _PIECE, "at": {"type": "number"}}, "required": ["piece", "at"]}
 _VIEW = {
     "type": "object",
-    "description": "What the camera frames and from which side of the body.",
+    "description": "What the camera frames, and from which side of the body. Leave `side` out and the code chooses the side, and adds to `hide`, so the subject shows.",
     "properties": {"look_at": _IDS, "side": {"type": "string", "enum": _SIDE}},
-    "required": ["look_at", "side"],
+    "required": ["look_at"],
 }
 _HIDE = {"type": "array", "items": {"type": "string"}, "description": "Structure or group ids hidden for this part, e.g. what is in front."}
 _TARGET_PROPERTIES = {"regions": {"type": "array", "items": _STRETCH}, "structures": _IDS}

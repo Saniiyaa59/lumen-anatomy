@@ -32,6 +32,7 @@ from app.agent import PART_ADAPTER, Agent, AgentError, Brief, ChatAnswer, NoteFa
 from app.articles import get_articles
 from app.config import REPO_ROOT, settings
 from app.llm import ClaudeLLM, LLMError, Usage
+from app.notes import read_pages
 from app.region import get_region
 from app.store import get_store
 from app.session_schemas import (
@@ -67,6 +68,10 @@ log = logging.getLogger("uvicorn.error")
 
 # Parts are built ahead of the student on these threads.
 _builders = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lumen-build")
+# Parts built ahead of the student, side by side. Two keeps the next one ready even when
+# the student moves on quickly. Parts built at the same time can't see each other's wording,
+# and a plan changed in chat wastes what was built for it, so it is not more.
+BUILD_AHEAD = 2
 
 
 class Tutor(Protocol):
@@ -117,7 +122,7 @@ class ExploreOnlyTutor:
 
 
 class AgentTutor:
-    """Parts built by the session agent, each one prepared while the student works on the one before."""
+    """Parts built by the session agent, the next BUILD_AHEAD of them side by side while the student works on the one before."""
 
     name = "agent"
 
@@ -132,9 +137,8 @@ class AgentTutor:
         return [PlanItem(part_id=item.part_id, title=item.title, kind=item.kind) for item in self.brief.plan]
 
     def prepare(self, index: int) -> None:
-        """Start building the part at this place in the plan, unless it is already under way."""
-        if index < len(self.brief.plan):
-            item = self.brief.plan[index]
+        """Start building the parts at this place in the plan and the BUILD_AHEAD - 1 after it, unless they are already under way."""
+        for item in self.brief.plan[index : index + BUILD_AHEAD]:
             if item.part_id not in self.building:
                 self.building[item.part_id] = _builders.submit(self.agent.build, self.brief, item)
 
@@ -195,7 +199,7 @@ class Session:
     tutor: Tutor
     usage: Usage
     notes_name: str | None = None
-    notes_bytes: int = 0  # the PDF itself is not kept: the facts read from it are in the brief
+    notes_bytes: int = 0  # the PDF itself is not kept: the facts read from it and each page's text are in the brief
     sent: list[Part] = field(default_factory=list)
     finished: bool = False
     # Set while the tutor waits for the student to answer a question; there is no plan until then.
@@ -249,6 +253,8 @@ def _dump_brief(brief: Brief) -> dict[str, Any]:
     return {
         "request": brief.request,
         "facts": [asdict(fact) for fact in brief.facts],
+        "notes_file": brief.notes_file,
+        "pages": brief.pages,
         "conversation": [asdict(turn) for turn in brief.conversation],
         "scope": brief.scope.model_dump() if brief.scope else None,
         "plan": [asdict(item) for item in brief.plan],
@@ -260,6 +266,8 @@ def _restore_brief(data: dict[str, Any]) -> Brief:
     return Brief(
         request=data["request"],
         facts=[NoteFact(**fact) for fact in data["facts"]],
+        notes_file=data.get("notes_file"),  # sessions saved before notes were kept page by page have neither
+        pages=data.get("pages", []),
         conversation=[Turn(**turn) for turn in data["conversation"]],
         scope=Scope.model_validate(data["scope"]) if data["scope"] else None,
         plan=[PlannedPart(**item) for item in data["plan"]],
@@ -279,7 +287,7 @@ def _dump(session: Session) -> dict[str, Any]:
         "finished": session.finished,
         "question": asdict(session.question) if session.question else None,
         "answers": [answer.model_dump(mode="json") for answer in session.answers],
-        "usage": asdict(session.usage),
+        "usage": session.usage.snapshot(),
         "summary": session.summary.model_dump(mode="json") if session.summary else None,
     }
     if isinstance(tutor, AgentTutor):
@@ -404,6 +412,8 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
             agent = make_agent(usage)
             brief = Brief(request=request)
             if body.notes:
+                brief.notes_file = body.notes.filename
+                brief.pages = read_pages(notes)
                 brief.facts = agent.read_notes(request or "Anything in these notes", body.notes.data, body.notes.filename)
             if request:
                 opened = agent.plan(brief)
@@ -537,4 +547,6 @@ def session_state(session_id: str) -> SessionState:
         claude_calls=session.usage.calls,
         input_tokens=session.usage.input_tokens + session.usage.cache_read_tokens + session.usage.cache_write_tokens,
         output_tokens=session.usage.output_tokens,
+        claude_seconds=round(session.usage.claude_seconds, 1),
+        timings=session.usage.snapshot()["timings"],
     )

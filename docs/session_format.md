@@ -145,12 +145,12 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 | `POST /api/sessions/{id}/next` | None | `{part, plan, done}`: the next part and the current plan, or `part: null` with `done: true` when there are no more |
 | `POST /api/sessions/{id}/answers` | An answer, as above | `{plan}`: the current plan, which the agent may have changed |
 | `POST /api/sessions/{id}/finish` | None | The summary |
-| `GET /api/sessions/{id}` | None | What the backend holds: the request, where its parts come from, the notes' file name and size, how many parts were sent, every answer, any parts the agent gave up on, and how many requests and tokens the session has used. For checking, not for the student |
+| `GET /api/sessions/{id}` | None | What the backend holds: the request, where its parts come from, the notes' file name and size, how many parts were sent, every answer, any parts the agent gave up on, how many requests and tokens the session has used, and `timings`: for each recent request to Claude, its task, how long Claude took, how long the backend's own work on the reply took, and what came of it (lookups, a hand-in accepted or rejected). For checking, not for the student |
 | `GET /api/tutor` | None | `{source}`: `sample` or `agent`, so the app can tell the student what to expect |
 
 - `next` gets a 409 while the tutor is waiting for an answer to its question.
 - An unknown session id gets a 404. Sessions are saved to `data/lumen.db` after every request that changes them, so they survive a restart and can be carried on another day. One left untouched for 30 days (`SESSION_DAYS`) is deleted. A session saved in a format this backend can no longer read gets a 410.
-- Parts being built ahead of the student are not saved; after a restart the next part is built when it is asked for, so that one takes longer. The PDF of notes is not kept either, only the facts read from it.
+- Parts being built ahead of the student are not saved; after a restart the next part is built when it is asked for, so that one takes longer. The PDF of notes is not kept either: only the facts read from it, and the text of each page so the agent can search and quote them later.
 - `finish` keeps the summary: asking again returns it without calling Claude.
 - When the agent or the Claude API fails, the reply is a 502 with the reason in words. The browser shows it and offers to try again.
 - Notes must be a PDF of at most 20 MB; anything else gets a 422 or a 413.
@@ -165,7 +165,7 @@ The notes travel as base64 inside JSON, not as a file upload, so the backend nee
 
 ## Open questions
 
-- **Whether a part's subject can be seen** is not guaranteed by the format. Playing the sample showed it: from the front, the first 46 mm of the anterior interventricular artery is behind the left atrium and the right ventricle, so the case's answer could not be clicked. The backend can now test this before a part is sent (`what_hides` in `backend/app/measure.py`, which casts sight lines through the shapes from where the viewer's camera would stand). It answers for the part's opening view, not for every angle the student could turn to.
+- **Whether a part's subject can be seen** is not guaranteed by the format. Playing the sample showed it: from the front, the first 46 mm of the anterior interventricular artery is behind the left atrium and the right ventricle, so the case's answer could not be clicked. The backend now sees to it before a part is sent: `choose_view` in `backend/app/measure.py` casts sight lines through the shapes from where the viewer's camera would stand, and picks the side and what to hide so enough of the subject shows (90% of a case's answer, 60% of a slider's track, half a pulse's route, 30% of what a demonstration highlights). Every part the agent sends has a `side`. It answers for the part's opening view, not for every angle the student could turn to.
 
 - **Talking mid-session** goes through `/chat`. The tutor answers with statements checked like a part's, and when the student asks to go another way it replaces every part not yet given. Its answer can select structures but can't yet move the camera, hide things or run a pulse.
 - **Notes sources** need the backend to say how a page is identified when the upload is slides rather than pages.

@@ -53,10 +53,20 @@ def test_an_agent_session_carries_on_after_a_restart_with_its_plan_parts_answers
     session_id = start["session_id"]
     first = client.post(f"/api/sessions/{session_id}/next").json()["part"]
     client.post(f"/api/sessions/{session_id}/chat", json={"text": "where does it run?", "selected": [RCA]})
+    for future in list(sessions._sessions[session_id].tutor.building.values()):
+        future.exception()  # let the part being built ahead finish, so nothing changes while comparing
     before = client.get(f"/api/sessions/{session_id}").json()
+
+    # Each request to Claude so far was timed, under the task it belonged to.
+    assert {"notes", "plan", "chat"} <= {t["stage"] for t in before["timings"]}
+    assert any(t["stage"].startswith("part ") for t in before["timings"])
+    assert len(before["timings"]) == before["claude_calls"]
 
     restart()
     after = client.get(f"/api/sessions/{session_id}").json()
+    # A builder running ahead may record its last request after the session was saved.
+    saved_timings = after.pop("timings")
+    assert saved_timings == before.pop("timings")[: len(saved_timings)]
     assert after == before
     assert after["notes"] == "lecture.pdf" and after["notes_bytes"] > 0
 
