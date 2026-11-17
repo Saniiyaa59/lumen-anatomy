@@ -67,6 +67,10 @@ log = logging.getLogger("uvicorn.error")
 
 # Parts are built ahead of the student on these threads.
 _builders = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lumen-build")
+# Parts built ahead of the student, side by side. Two keeps the next one ready even when
+# the student moves on quickly. Parts built at the same time can't see each other's wording,
+# and a plan changed in chat wastes what was built for it, so it is not more.
+BUILD_AHEAD = 2
 
 
 class Tutor(Protocol):
@@ -117,7 +121,7 @@ class ExploreOnlyTutor:
 
 
 class AgentTutor:
-    """Parts built by the session agent, each one prepared while the student works on the one before."""
+    """Parts built by the session agent, the next BUILD_AHEAD of them side by side while the student works on the one before."""
 
     name = "agent"
 
@@ -132,9 +136,8 @@ class AgentTutor:
         return [PlanItem(part_id=item.part_id, title=item.title, kind=item.kind) for item in self.brief.plan]
 
     def prepare(self, index: int) -> None:
-        """Start building the part at this place in the plan, unless it is already under way."""
-        if index < len(self.brief.plan):
-            item = self.brief.plan[index]
+        """Start building the parts at this place in the plan and the BUILD_AHEAD - 1 after it, unless they are already under way."""
+        for item in self.brief.plan[index : index + BUILD_AHEAD]:
             if item.part_id not in self.building:
                 self.building[item.part_id] = _builders.submit(self.agent.build, self.brief, item)
 
@@ -279,7 +282,7 @@ def _dump(session: Session) -> dict[str, Any]:
         "finished": session.finished,
         "question": asdict(session.question) if session.question else None,
         "answers": [answer.model_dump(mode="json") for answer in session.answers],
-        "usage": asdict(session.usage),
+        "usage": session.usage.snapshot(),
         "summary": session.summary.model_dump(mode="json") if session.summary else None,
     }
     if isinstance(tutor, AgentTutor):
@@ -537,4 +540,6 @@ def session_state(session_id: str) -> SessionState:
         claude_calls=session.usage.calls,
         input_tokens=session.usage.input_tokens + session.usage.cache_read_tokens + session.usage.cache_write_tokens,
         output_tokens=session.usage.output_tokens,
+        claude_seconds=round(session.usage.claude_seconds, 1),
+        timings=session.usage.snapshot()["timings"],
     )

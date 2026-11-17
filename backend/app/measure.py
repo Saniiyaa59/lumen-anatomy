@@ -244,6 +244,42 @@ def _test_points(region: Region, stretches: list[Stretch], structures: list[str]
     return points
 
 
+def _subject(
+    region: Region, stretches: list[Stretch] | None, structures: list[str] | None, look_at: list[str] | None
+) -> tuple[list[tuple[np.ndarray, str, float]], list[str]]:
+    """The points to test on what a view must show, and what the camera frames (`look_at`, or the subject itself)."""
+    stretches = stretches or []
+    structures = structures or []
+    for stretch in stretches:
+        _require_place(region, stretch.piece, stretch.start)
+        _require_place(region, stretch.piece, stretch.to)
+    unknown = [i for i in [*structures, *(look_at or [])] if i not in region.structures]
+    if unknown:
+        raise ValueError(f"not structures in the {region.id} region: {unknown}")
+    points = _test_points(region, stretches, structures)
+    if not points:
+        raise ValueError("nothing to look for: give at least one stretch or one structure")
+    framed = look_at or list(dict.fromkeys([*(region.vessel_of(s.piece) for s in stretches), *structures]))
+    return points, framed
+
+
+def _covers(region: Region, points: list[tuple[np.ndarray, str, float]], framed: list[str], side: Side) -> list[set[str]]:
+    """For each point, every structure in front of it from this side, whatever is hidden.
+
+    Where the camera stands depends only on the side and what is framed, so one cast
+    answers the question for every hide list: a point shows when all that covers it is hidden.
+    """
+    targets = np.array([point for point, _, _ in points])
+    camera = _camera(region, framed, SIDE_DIRECTIONS[side])
+    origins = np.repeat(camera[None, :], len(points), axis=0)
+    reach = np.linalg.norm(targets - origins, axis=1)
+    # A structure covers the point if the sight line meets it before reaching the point's own surface.
+    return [
+        {i for i, met in crossed.items() if i != own and met < distance - room}
+        for crossed, (_, own, room), distance in zip(region.shapes.crossed(origins, targets), points, reach)
+    ]
+
+
 def what_hides(
     region: Region,
     stretches: list[Stretch] | None = None,
@@ -261,32 +297,16 @@ def what_hides(
     viewer's camera would stand to points on the target, so the answer matches
     the part's opening view, not every angle the student could turn to.
     """
-    stretches = stretches or []
-    structures = structures or []
-    for stretch in stretches:
-        _require_place(region, stretch.piece, stretch.start)
-        _require_place(region, stretch.piece, stretch.to)
-    unknown = [i for i in [*structures, *(look_at or [])] if i not in region.structures]
-    if unknown:
-        raise ValueError(f"not structures in the {region.id} region: {unknown}")
-    points = _test_points(region, stretches, structures)
-    if not points:
-        raise ValueError("nothing to look for: give at least one stretch or one structure")
-    framed = look_at or list(dict.fromkeys([*(region.vessel_of(s.piece) for s in stretches), *structures]))
+    points, framed = _subject(region, stretches, structures, look_at)
     gone = set(region.expand(hidden or []))
-    targets = np.array([point for point, _, _ in points])
 
     views: list[SideView] = []
     for side in sides or list(SIDE_DIRECTIONS):
-        camera = _camera(region, framed, SIDE_DIRECTIONS[side])
-        origins = np.repeat(camera[None, :], len(points), axis=0)
-        reach = np.linalg.norm(targets - origins, axis=1)
+        covers = _covers(region, points, framed, side)
         seen = 0
         in_front_now: dict[str, int] = {}
         in_front_ever: set[str] = set()
-        for crossed, (_, own, room), distance in zip(region.shapes.crossed(origins, targets), points, reach):
-            # A structure covers the point if the sight line meets it before reaching the point's own surface.
-            covering = {i for i, met in crossed.items() if i != own and met < distance - room}
+        for covering in covers:
             in_front_ever |= covering
             showing = covering - gone
             seen += not showing
@@ -306,3 +326,127 @@ def what_hides(
     # Best first: most visible now, then the side needing the least hidden.
     views.sort(key=lambda view: (-view.visible, len(view.hide_to_see_all)))
     return Visibility(points_tested=len(points), sides=views)
+
+
+# Choosing a view: which side to look from and what to hide, so enough of something shows.
+
+# What it costs to hide a structure, by where it sits in the atlas. A chamber is what the
+# vessels lie on, and hiding one leaves a vessel floating in space, so it is the last resort.
+# Veins, valve leaflets, papillary muscles and the great vessels in front go freely. Anything
+# else (another artery, say) is in between. The group ids are the heart region's.
+HIDE_CHAMBER = 10
+HIDE_OTHER = 3
+HIDE_FREELY = 1
+# Added for something the part frames: the camera points at it, so it is hidden only when
+# nothing else will do. Framing says where to look, not what must stay in sight, and a
+# vessel's own wall (the aorta around its valve leaflets) is often what is in the way.
+HIDE_FRAMED_EXTRA = 2
+_FREE_TO_HIDE_UNDER = {"venous_system", "valvular_complex_of_heart", "aorta", "pulmonary_arteries"}
+_CHAMBERS_UNDER = "heart"
+
+
+def hide_cost(region: Region, structure_id: str) -> int:
+    parent = region.parent_of(structure_id)
+    if parent == _CHAMBERS_UNDER:
+        return HIDE_CHAMBER
+    if _FREE_TO_HIDE_UNDER & set(region.ancestors(structure_id)) or region.parent_of(parent or "") == _CHAMBERS_UNDER:
+        return HIDE_FREELY  # the last test: inside a chamber, such as a papillary muscle
+    return HIDE_OTHER
+
+
+class SideChoice(_Out):
+    side: Side
+    passes: bool  # whether enough shows with `added` hidden
+    visible: float  # share of the tested points that show with `added` hidden
+    added: list[str]  # what this side needs hidden, beyond what was hidden already
+    cost: int  # what hiding `added` costs: see hide_cost
+    still_in_front: list[str]  # when it doesn't pass: what is in the way and may not be hidden, being part of the subject
+
+
+class ViewChoice(_Out):
+    side: Side | None  # the best side, or None when no side shows enough
+    hide: list[str]  # the whole hide list: what was hidden already, then `added`
+    added: list[str]
+    visible: float
+    need: float
+    sides: list[SideChoice]  # best first
+
+
+def _cheapest_hide(covers: list[set[str]], need: float, cost: dict[str, int], keep: set[str]) -> tuple[list[str], int]:
+    """Hide as little as will show `need` of the points: greedily the blocker that clears most per cost, then drop any not needed.
+
+    Once enough shows, blockers that are free to hide (cost HIDE_FREELY) are hidden as well
+    where that shows more, since a fuller view of the subject costs nothing. Returns what to hide and how many points show then. Structures in `keep` are never hidden.
+    """
+    wanted = need * len(covers)
+    hidden: set[str] = set()
+
+    def shown(hide: set[str]) -> int:
+        return sum(not (covering - hide) for covering in covers)
+
+    while shown(hidden) < wanted:
+        counts: dict[str, int] = {}
+        for covering in covers:
+            left = covering - hidden
+            if left and not left & keep:
+                for structure_id in left:
+                    counts[structure_id] = counts.get(structure_id, 0) + 1
+        if not counts:
+            break
+        hidden.add(max(counts, key=lambda i: (counts[i] / cost[i], -cost[i], i)))
+    if shown(hidden) >= wanted:
+        for structure_id in sorted(hidden, key=lambda i: (-cost[i], i)):
+            if shown(hidden - {structure_id}) >= wanted:
+                hidden.remove(structure_id)
+        # Enough shows. Whatever is free to hide and still in the way goes too, if that shows more.
+        while True:
+            now = shown(hidden)
+            gains = {i: shown(hidden | {i}) - now for i in {i for c in covers for i in c - hidden - keep if cost[i] == HIDE_FREELY}}
+            better = [i for i, gain in gains.items() if gain > 0]
+            if not better:
+                break
+            hidden.add(max(better, key=lambda i: (gains[i], i)))
+    return sorted(hidden, key=lambda i: (cost[i], i)), shown(hidden)
+
+
+def choose_view(
+    region: Region,
+    need: float,
+    stretches: list[Stretch] | None = None,
+    structures: list[str] | None = None,
+    look_at: list[str] | None = None,
+    hidden: list[str] | None = None,
+    prefer: Side | None = None,
+) -> ViewChoice:
+    """The side to look from, and what more to hide, so that at least `need` (0 to 1) of something shows.
+
+    Tries every side. On each it hides the cheapest blockers (see hide_cost) until
+    enough shows. It never hides the thing itself, and hides what the camera frames
+    only at extra cost (HIDE_FRAMED_EXTRA). The best
+    side is one that shows enough, then the one whose hiding costs least, then
+    `prefer`, then the one that shows most. Each side takes one cast of sight lines,
+    so this costs about as much as what_hides.
+    """
+    points, framed = _subject(region, stretches, structures, look_at)
+    gone = set(region.expand(hidden or []))
+    keep = {own for _, own, _ in points}
+    choices: list[SideChoice] = []
+    for side in SIDE_DIRECTIONS:
+        covers = [covering - gone for covering in _covers(region, points, framed, side)]
+        cost = {i: hide_cost(region, i) + (HIDE_FRAMED_EXTRA if i in framed else 0) for covering in covers for i in covering}
+        added, shown = _cheapest_hide(covers, need, cost, keep)
+        visible = shown / len(points)
+        passes = visible >= need
+        stuck = sorted({i for covering in covers for i in covering & keep}) if not passes else []
+        choices.append(SideChoice(side=side, passes=passes, visible=visible, added=added, cost=sum(cost[i] for i in added), still_in_front=stuck))
+    order = list(SIDE_DIRECTIONS)
+    choices.sort(key=lambda c: (not c.passes, c.cost, c.side != prefer, -c.visible, order.index(c.side)))
+    best = choices[0]
+    return ViewChoice(
+        side=best.side if best.passes else None,
+        hide=[*(hidden or []), *best.added] if best.passes else list(hidden or []),
+        added=best.added if best.passes else [],
+        visible=best.visible,
+        need=need,
+        sides=choices,
+    )

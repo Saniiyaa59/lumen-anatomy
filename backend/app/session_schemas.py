@@ -343,6 +343,19 @@ class AnswerReply(_Model):
     plan: list[PlanItem]  # the current plan; the agent may have changed it
 
 
+class Timing(_Model):
+    """One request to Claude: how long it took and what came of it."""
+
+    at: float  # unix time the reply came, so builders running side by side can be lined up
+    stage: str  # the task: "plan", "part <id>", "chat", "decide after <id>", "summary" or "notes"
+    claude_seconds: float  # waiting for Claude
+    here_seconds: float  # the backend's own work on the reply: lookups, checking a hand-in
+    did: str  # what the reply was: lookups and which, a hand-in accepted or rejected, or text
+    output_tokens: int  # thinking included
+    input_tokens: int
+    cached_share: float  # of the input, the share read from the cache
+
+
 class SessionState(_Model):
     """What the backend holds for one session. For checking and debugging, not for the student."""
 
@@ -360,3 +373,5 @@ class SessionState(_Model):
     claude_calls: int
     input_tokens: int
     output_tokens: int
+    claude_seconds: float  # waiting for Claude, summed; builders run side by side, so more than the time that passed
+    timings: list[Timing]  # the latest requests, oldest first

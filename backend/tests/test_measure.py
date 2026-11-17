@@ -252,3 +252,59 @@ def test_what_hides_rejects_nothing_to_look_for_and_unknown_ids():
         measure.what_hides(region, structures=["spleen"])
     with pytest.raises(ValueError, match="outside"):
         measure.what_hides(region, stretches=[Stretch(piece=f"{LAD}.0", start=0, to=0.9)])
+
+
+# choose_view: the side to look from and what to hide
+
+
+def test_hiding_a_chamber_costs_most_and_veins_leaflets_and_great_vessels_least():
+    assert measure.hide_cost(region, "left_atrium") == measure.HIDE_CHAMBER
+    for free in ("great_cardiac_vein", "left_coronary_leaflet", "ascending_aorta", "pulmonary_trunk", "anterior_papillary_muscle_of_right_ventricle"):
+        assert measure.hide_cost(region, free) == measure.HIDE_FREELY, free
+    assert measure.hide_cost(region, "circumflex_artery_of_heart") == measure.HIDE_OTHER
+
+
+def test_the_start_of_the_anterior_interventricular_artery_is_shown_from_the_left_with_the_left_atrium_hidden():
+    # Found by hand while playing the sample: it is behind the left atrium and the pulmonary trunk from the front.
+    choice = measure.choose_view(region, 0.9, stretches=PROXIMAL_LAD)
+    assert choice.side == "left" and "left_atrium" in choice.added and choice.visible >= 0.9
+    check = measure.what_hides(region, stretches=PROXIMAL_LAD, hidden=choice.hide, sides=["left"])
+    assert check.sides[0].visible == pytest.approx(choice.visible)
+
+
+def test_a_view_that_already_works_needs_nothing_hidden_and_what_was_hidden_is_kept():
+    choice = measure.choose_view(region, 0.5, stretches=[Stretch(piece="right_coronary_artery.0", start=0.03, to=0.08)], hidden=["cardiac_veins"])
+    assert choice.side == "anterior" and choice.added == [] and choice.hide == ["cardiac_veins"]
+
+
+def test_once_enough_shows_what_is_free_to_hide_goes_too():
+    leaflets = ["left_coronary_leaflet", "right_coronary_leaflet", "non_coronary_leaflet"]
+    choice = measure.choose_view(region, 0.3, structures=leaflets)
+    assert choice.visible > 0.5  # well past the 30% needed
+    assert all(measure.hide_cost(region, i) == measure.HIDE_FREELY for i in choice.added)
+
+
+def test_the_subject_is_never_hidden_so_some_views_cannot_be_had():
+    chambers = ["left_atrium", "left_ventricle", "right_atrium", "right_ventricle"]
+    choice = measure.choose_view(region, 0.9, structures=chambers)
+    assert choice.side is None and choice.added == [] and choice.hide == []
+    assert set(choice.sides[0].still_in_front) <= set(chambers) and choice.sides[0].still_in_front
+    assert all(not set(side.added) & set(chambers) for side in choice.sides)
+
+
+def test_what_is_framed_is_hidden_only_when_it_must_be():
+    # Framing the aorta points the camera at the valve; when it was never hidden, a ventricle went instead.
+    leaflets = ["left_coronary_leaflet", "right_coronary_leaflet", "non_coronary_leaflet"]
+    choice = measure.choose_view(region, 0.3, structures=leaflets, look_at=["ascending_aorta", *leaflets])
+    assert choice.side is not None
+    assert not {"left_atrium", "left_ventricle", "right_atrium", "right_ventricle"} & set(choice.added)
+    # A framed vessel that isn't in the way stays.
+    rca = [Stretch(piece="right_coronary_artery.0", start=0.03, to=0.08)]
+    assert measure.choose_view(region, 0.5, stretches=rca, look_at=["right_coronary_artery", "ascending_aorta"]).added == []
+
+
+def test_the_side_asked_for_wins_a_tie():
+    rca = [Stretch(piece="right_coronary_artery.0", start=0.03, to=0.08)]
+    free = [c.side for c in measure.choose_view(region, 0.1, stretches=rca).sides if c.passes and c.cost == 0]
+    assert len(free) > 1
+    assert measure.choose_view(region, 0.1, stretches=rca, prefer=free[-1]).side == free[-1]
