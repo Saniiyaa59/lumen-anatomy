@@ -12,7 +12,7 @@ Every distance is in metres along a centre-line piece.
 import json
 from typing import Any
 
-from app import measure
+from app import measure, notes
 from app.articles import Articles
 from app.region import Region
 
@@ -80,6 +80,16 @@ LOOKUP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_notes",
+        "description": "Search the student's notes for some words. Returns the best-matching passages, each with its page. Use it before the atlas whenever the student gave notes, and to find what the facts listed from the notes leave out. Quote from what it returns, or read the whole page with read_notes_page.",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    },
+    {
+        "name": "read_notes_page",
+        "description": "The text of one page of the student's notes, counted from 1. Read it before quoting from it: a quote must be copied word for word.",
+        "input_schema": {"type": "object", "properties": {"page": {"type": "integer"}}, "required": ["page"]},
+    },
+    {
         "name": "search_articles",
         "description": "Search the atlas' articles for some words. Returns the best-matching passages, each with the article it is from. Use the words a textbook would use. An article may be filed under another name than the model uses (the anterior interventricular artery is 'Left anterior descending artery').",
         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
@@ -110,9 +120,19 @@ def _dump(result: Any) -> str:
     return json.dumps(rename(data), separators=(",", ":"))
 
 
-def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articles) -> str:
-    """Run one lookup tool and return its result as text. Raises ValueError with a reason the agent can act on."""
+def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articles, pages: list[str] | None = None) -> str:
+    """Run one lookup tool and return its result as text. Raises ValueError with a reason the agent can act on.
+
+    `pages` is the text of each page of the student's notes, for the notes tools.
+    """
     try:
+        if name in ("search_notes", "read_notes_page") and not pages:
+            return "The student gave no notes whose text could be read. Use the facts listed from the notes, if any, or the atlas."
+        if name == "search_notes":
+            found = notes.search(pages or [], args["query"])
+            return _dump(found) if found else "Nothing in the notes matched. Try other words, or the words the notes might use."
+        if name == "read_notes_page":
+            return json.dumps({"page": args["page"], "text": notes.read_page(pages or [], int(args["page"]))})
         if name == "describe":
             return _dump(measure.describe(region, args["id"]))
         if name == "branches_of":
@@ -154,12 +174,13 @@ def run_lookup(name: str, args: dict[str, Any], region: Region, articles: Articl
 
 _EVIDENCE = {
     "type": "object",
-    "description": "Where the statement comes from. atlas: give `article` and `quote`. notes: give `fact`. model: for something measured with the tools, give nothing more.",
+    "description": "Where the statement comes from. atlas: give `article` and `quote`. notes: give `fact`, or `page` and `quote`. model: for something measured with the tools, give nothing more.",
     "properties": {
         "type": {"type": "string", "enum": ["atlas", "notes", "model"]},
         "article": {"type": "string", "description": "atlas only: the article's key, as search_articles gives it"},
-        "quote": {"type": "string", "description": "atlas only: one or two sentences copied word for word from the article that say what the statement says"},
-        "fact": {"type": "integer", "description": "notes only: the number of the fact from the student's notes"},
+        "quote": {"type": "string", "description": "atlas, or notes with `page`: one or two sentences copied word for word from the article or the page that say what the statement says"},
+        "fact": {"type": "integer", "description": "notes only: the number of a fact listed from the student's notes"},
+        "page": {"type": "integer", "description": "notes only, in place of `fact`: the page of the notes the quote is on"},
     },
     "required": ["type"],
 }

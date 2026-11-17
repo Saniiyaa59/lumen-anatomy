@@ -37,7 +37,7 @@ Then install:
 python -m pip install -r requirements-dev.txt
 ```
 
-Run this again after pulling a change to `requirements.txt`. The geometry packages (`numpy`, `rtree`, `trimesh`) were added on 2026-11-14; without them the backend still starts, but the tests that ask what can be seen fail.
+Run this again after pulling a change to `requirements.txt`. The geometry packages (`numpy`, `rtree`, `trimesh`) were added on 2026-11-14; without them the backend still starts, but the tests that ask what can be seen fail. `pypdf` was added on 2026-11-17; without it uploaded notes can't be searched (the session still works from the facts Claude reads at the start), and one test is skipped.
 
 Frontend:
 

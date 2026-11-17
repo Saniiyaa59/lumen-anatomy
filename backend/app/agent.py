@@ -21,7 +21,7 @@ from typing import Any, Callable, Literal, Sequence
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from app import measure
+from app import measure, notes
 from app.agent_tools import ANSWER_STUDENT_TOOL, ASK_STUDENT_TOOL, DECIDE_TOOL, LOOKUP_TOOLS, MUST_SEE, SUBMIT_PART_TOOLS, SUBMIT_PLAN_TOOL, SUBMIT_SUMMARY_TOOL, run_lookup
 from app.articles import Articles
 from app.llm import LLM, Usage
@@ -66,8 +66,9 @@ What this model cannot show: which part of an organ's wall a vessel supplies (th
 1. Never state a distance, the order of branches, or what lies beyond a point from memory. Ask the tools. All distances are metres.
 2. Every statement the student reads needs a source:
    - atlas: the article's key and a quote copied word for word from it that says what your statement says. Search, then read the article, then quote.
-   - notes: the number of a fact from the student's notes, when notes were given. Prefer the notes. If the notes and the atlas disagree, follow the notes and say that they differ.
+   - notes: when the student gave notes, either the number of a fact listed from them, or a page and a quote copied word for word from that page. Look in the notes before the atlas: search_notes finds what the listed facts left out, and read_notes_page gives a whole page. Prefer the notes. If the notes and the atlas disagree, follow the notes and say that they differ.
    - model: only for what you measured with the tools, such as a length or where a branch leaves.
+   A statement says only what its source says. Don't add to it what the session will do next, what a later part covers, or a fact from somewhere else: give a further fact its own statement and source, and leave remarks about the session out, since every statement must have a source.
 3. The student must be able to see what a part is about when it opens. The code sees to this: leave `view.side` out, put in `view.look_at` what the camera should frame, and the code picks the side and adds what is in front to `hide`. It never hides the part's subject, and hides what you frame only when it must. Don't mention the side in what you write unless you chose it with `find_view`. Give a side yourself only to insist on it; if too little shows from there, the code picks another.
 4. A click case needs exactly one right place. Give findings that only that place explains, and check with `beyond` that they match what the model shows. Add near misses for the wrong clicks a student is likely to make, each with its own short explanation. A near miss may not overlap the answer.
 
@@ -146,6 +147,8 @@ class Brief:
 
     request: str
     facts: list[NoteFact] = field(default_factory=list)
+    notes_file: str | None = None  # the notes' file name, when the student gave notes
+    pages: list[str] = field(default_factory=list)  # the text of each page of the notes, for search_notes; empty if it couldn't be read
     conversation: list[Turn] = field(default_factory=list)  # what the tutor and student said, oldest first
     scope: Scope | None = None
     plan: list[PlannedPart] = field(default_factory=list)
@@ -235,12 +238,13 @@ class Agent:
         accept: Callable[[dict], Any],
         also: Sequence[tuple[dict[str, Any], Callable[[dict], Any]]] = (),
         stage: str | None = None,
+        brief: "Brief | None" = None,
     ) -> Any:
         """Let Claude work on a task with the lookup tools until what it hands in is accepted.
 
         `also` offers other ways to finish, each with its own check. The main hand-in
         stays last in the tool list. `stage` names the task in the timings (the
-        hand-in tool's name if not given).
+        hand-in tool's name if not given). `brief` gives the lookups the student's notes.
         """
         stage = stage or hand_in["name"]
         accepts = {hand_in["name"]: accept, **{tool["name"]: check for tool, check in also}}
@@ -286,7 +290,7 @@ class Agent:
                 else:
                     lookups.append(call.name)
                     try:
-                        content = run_lookup(call.name, call.input, self.region, self.articles)
+                        content = run_lookup(call.name, call.input, self.region, self.articles, brief.pages if brief else [])
                     except (ValueError, TypeError) as error:
                         content, failed = str(error), True
                 results.append({"type": "tool_result", "tool_use_id": call.id, "content": content, **({"is_error": True} if failed else {})})
@@ -313,7 +317,9 @@ class Agent:
         if brief.facts:
             lines.append("Facts from the student's notes (cite one as source type notes with its number):")
             lines += [f"{fact.number}. {fact.text} (page {fact.page})" for fact in brief.facts]
-        else:
+        if brief.pages:
+            lines.append(f"The notes have {len(brief.pages)} pages. Search them with search_notes for anything these facts leave out.")
+        if not brief.facts and not brief.pages:
             lines.append("The student gave no notes that could be read. Use the atlas.")
         if brief.plan:
             lines += ["", "The plan:"]
@@ -428,7 +434,7 @@ class Agent:
             return self._accept_answer(brief, {**raw, "new_plan": None})
 
         also = [(ASK_STUDENT_TOOL, accept_question)] if may_ask else []
-        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)], stage="plan")
+        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)], stage="plan", brief=brief)
 
     # Building a part
 
@@ -439,7 +445,7 @@ class Agent:
             f'Build this part now: [{item.kind}] "{item.title}". What it should teach: {item.intent}\n\n'
             f"Look up what you need, making all the lookups you already know you need in the same turn, then hand it in with {SUBMIT_PART_TOOLS[item.kind]['name']}. Leave view.side out: the code chooses the view."
         )
-        return self._work(task, SUBMIT_PART_TOOLS[item.kind], lambda raw: self._accept_part(brief, item, raw), stage=f"part {item.part_id}")
+        return self._work(task, SUBMIT_PART_TOOLS[item.kind], lambda raw: self._accept_part(brief, item, raw), stage=f"part {item.part_id}", brief=brief)
 
     def _source(self, brief: Brief, evidence: Any, path: str, problems: list[str]) -> dict | None:
         """Turn the agent's evidence for a statement into a session source, or record why it is not good enough."""
@@ -447,6 +453,19 @@ class Agent:
         if kind == "model":
             return {"type": "model"}
         if kind == "notes":
+            if evidence.get("page") is not None:
+                page, quote = evidence.get("page"), str(evidence.get("quote", ""))
+                if not brief.pages:
+                    problems.append(f"{path}.page: the notes' pages can't be quoted in this session; cite a fact by its number")
+                elif not isinstance(page, int) or not 1 <= page <= len(brief.pages):
+                    problems.append(f"{path}.page: the notes have pages 1 to {len(brief.pages)}")
+                elif len(quote.strip()) < MIN_QUOTE_CHARS:
+                    problems.append(f"{path}.quote: give a full sentence copied from that page of the notes")
+                elif not notes.quoted_on(brief.pages, page, quote):
+                    problems.append(f"{path}.quote: this is not on page {page} of the notes word for word; read the page with read_notes_page and copy the sentence exactly")
+                else:
+                    return {"type": "notes", "file": brief.notes_file or "notes.pdf", "page": page}
+                return None
             fact = next((f for f in brief.facts if f.number == evidence.get("fact")), None)
             if fact is None:
                 problems.append(f"{path}.fact: there is no notes fact with that number")
@@ -582,7 +601,7 @@ class Agent:
             "give new_plan: it replaces every part they have not been given yet. Otherwise leave the plan alone. "
             "If there is no plan yet, they are exploring the model: give new_plan only when they ask to be taught, prepared or quizzed."
         )
-        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw), stage="chat")
+        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw), stage="chat", brief=brief)
 
     def _accept_answer(self, brief: Brief, raw: dict) -> ChatAnswer:
         """Check an answer to the student: its statements' sources, what it points to, and any new plan."""
@@ -642,7 +661,7 @@ class Agent:
             part_id = next(c for c in (f"extra{n}-{_slug(title)}" for n in range(1, 99)) if c not in taken)
             return PlannedPart(part_id, title, extra["kind"], f"{str(extra.get('intent', '')).strip()} (Added because: {str(raw.get('reason', '')).strip()})")
 
-        return self._work(task, DECIDE_TOOL, accept, stage=f"decide after {case.id}")
+        return self._work(task, DECIDE_TOOL, accept, stage=f"decide after {case.id}", brief=brief)
 
     # Closing
 
@@ -669,7 +688,7 @@ class Agent:
                 raise _Rejected(["give at least one phrase in solid or shaky"])
             return solid, shaky
 
-        return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary")
+        return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary", brief=brief)
 
 
 def sources_used(parts: list[Part]) -> list[Source]:

@@ -32,6 +32,7 @@ from app.agent import PART_ADAPTER, Agent, AgentError, Brief, ChatAnswer, NoteFa
 from app.articles import get_articles
 from app.config import REPO_ROOT, settings
 from app.llm import ClaudeLLM, LLMError, Usage
+from app.notes import read_pages
 from app.region import get_region
 from app.store import get_store
 from app.session_schemas import (
@@ -198,7 +199,7 @@ class Session:
     tutor: Tutor
     usage: Usage
     notes_name: str | None = None
-    notes_bytes: int = 0  # the PDF itself is not kept: the facts read from it are in the brief
+    notes_bytes: int = 0  # the PDF itself is not kept: the facts read from it and each page's text are in the brief
     sent: list[Part] = field(default_factory=list)
     finished: bool = False
     # Set while the tutor waits for the student to answer a question; there is no plan until then.
@@ -252,6 +253,8 @@ def _dump_brief(brief: Brief) -> dict[str, Any]:
     return {
         "request": brief.request,
         "facts": [asdict(fact) for fact in brief.facts],
+        "notes_file": brief.notes_file,
+        "pages": brief.pages,
         "conversation": [asdict(turn) for turn in brief.conversation],
         "scope": brief.scope.model_dump() if brief.scope else None,
         "plan": [asdict(item) for item in brief.plan],
@@ -263,6 +266,8 @@ def _restore_brief(data: dict[str, Any]) -> Brief:
     return Brief(
         request=data["request"],
         facts=[NoteFact(**fact) for fact in data["facts"]],
+        notes_file=data.get("notes_file"),  # sessions saved before notes were kept page by page have neither
+        pages=data.get("pages", []),
         conversation=[Turn(**turn) for turn in data["conversation"]],
         scope=Scope.model_validate(data["scope"]) if data["scope"] else None,
         plan=[PlannedPart(**item) for item in data["plan"]],
@@ -407,6 +412,8 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
             agent = make_agent(usage)
             brief = Brief(request=request)
             if body.notes:
+                brief.notes_file = body.notes.filename
+                brief.pages = read_pages(notes)
                 brief.facts = agent.read_notes(request or "Anything in these notes", body.notes.data, body.notes.filename)
             if request:
                 opened = agent.plan(brief)
