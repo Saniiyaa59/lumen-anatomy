@@ -17,6 +17,7 @@ from app.session_schemas import (
     ClickCase,
     DamageSlider,
     Demonstration,
+    MultipleChoice,
     Part,
     Place,
     Pulse,
@@ -112,6 +113,10 @@ class _Check:
                 self.stretches(miss.regions, f"{miss_path}.regions")
                 self.structures(miss.structures, f"{miss_path}.structures")
                 self.statement(miss.statement, f"{miss_path}.statement")
+        elif isinstance(part, MultipleChoice):
+            self.structures(part.highlight, f"{path}.highlight")
+            for index, option in enumerate(part.options):
+                self.statement(option.feedback, f"{path}.options[{index}].feedback")
 
 
 def check_part(part: Part, region: Region, articles: Articles | None = None) -> list[str]:

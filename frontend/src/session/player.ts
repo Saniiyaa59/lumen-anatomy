@@ -1,19 +1,22 @@
 import { useSyncExternalStore } from "react";
+import type { Working } from "../api.ts";
 import type { ClickPlace } from "../selection/store.ts";
-import type { Answer, Part, PlanItem, Question, SessionInPlay, Statement, Summary } from "./format.ts";
+import type { Answer, ChoiceAnswer, ClickAnswer, Part, PlanItem, Question, SessionInPlay, Statement, Summary } from "./format.ts";
 import { grade, type Clicked } from "./grade.ts";
 
-/** How a click case stands for the student. */
+/** How a click case or a multiple-choice question stands for the student. */
 export interface CaseOutcome {
-  /** How many times they have clicked. */
+  /** How many times they have clicked or picked. */
   attempts: number;
   correct: boolean;
   /** True once they asked to be shown the answer. */
   revealed: boolean;
   /** Feedback for the latest click, or null before the first. */
   statement: Statement | null;
-  /** The latest click, so a wrong one can be marked on the model. */
+  /** The latest click, so a wrong one can be marked on the model. Always null for a question. */
   lastClick: Clicked | null;
+  /** For a question, the options picked so far, in order, counted from 0. */
+  picks?: number[];
 }
 
 /** One line of what the tutor and the student said before the plan. */
@@ -64,12 +67,14 @@ export interface PlayerState {
   readonly reached: number;
   /** Where the damage point sits on each slider part, by part id. */
   readonly damage: Readonly<Record<string, number>>;
-  /** How each click case stands, by part id. */
+  /** How each click case and multiple-choice question stands, by part id. */
   readonly outcomes: Readonly<Record<string, CaseOutcome>>;
-  /** Every click on a case, oldest first, in the shape sent to the backend. */
+  /** Every click on a case and pick on a question, oldest first, in the shape sent to the backend. */
   readonly answers: readonly Answer[];
   /** What the student and the tutor said during the session, oldest first. */
   readonly messages: readonly SessionMessage[];
+  /** While waiting for the backend, what the tutor is doing, as it last reported. Empty otherwise. */
+  readonly working: readonly Working[];
 }
 
 export const IDLE: PlayerState = {
@@ -86,6 +91,7 @@ export const IDLE: PlayerState = {
   outcomes: {},
   answers: [],
   messages: [],
+  working: [],
 };
 
 /**
@@ -110,6 +116,41 @@ export function caseIsOpen(state: PlayerState): boolean {
   if (part?.kind !== "click_case") return false;
   const outcome = state.outcomes[part.id];
   return !outcome?.correct && !outcome?.revealed;
+}
+
+/**
+ * Wrong picks on a multiple-choice question before its answer is shown. Without
+ * a limit a student can guess through every option and learn little from it. The
+ * answer is also shown once a wrong pick leaves only one option. The backend
+ * counts the same way (MAX_WRONG_PICKS in backend/app/sessions.py).
+ */
+export const MAX_WRONG_PICKS = 2;
+
+/** True when this many picks on a question with this many options means its answer should now be shown. */
+export function outOfPicks(wrong: number, options: number): boolean {
+  return wrong >= MAX_WRONG_PICKS || options - wrong <= 1;
+}
+
+/** True while a multiple-choice question is waiting for a pick: not yet answered correctly, and the answer not shown. */
+export function questionIsOpen(state: PlayerState): boolean {
+  const part = currentPart(state);
+  if (part?.kind !== "multiple_choice") return false;
+  const outcome = state.outcomes[part.id];
+  return !outcome?.correct && !outcome?.revealed;
+}
+
+/** True while the part on screen is a case or question still waiting for an answer. */
+export function quizIsOpen(state: PlayerState): boolean {
+  return caseIsOpen(state) || questionIsOpen(state);
+}
+
+/**
+ * True while names on the model would give an answer away: a case asking for a
+ * place, or a question about what is highlighted.
+ */
+export function namesHidden(state: PlayerState): boolean {
+  const part = currentPart(state);
+  return caseIsOpen(state) || (part?.kind === "multiple_choice" && part.highlight.length > 0 && questionIsOpen(state));
 }
 
 /**
@@ -175,7 +216,14 @@ export class PlayerStore {
   }
 
   setPending(pending: boolean): void {
-    if (pending !== this.state.pending) this.update({ ...this.state, pending });
+    // What the tutor was doing is stale once nothing is being waited for.
+    if (pending !== this.state.pending) this.update({ ...this.state, pending, working: pending ? this.state.working : [] });
+  }
+
+  /** What the tutor is doing, as the backend last reported it while the student waits. */
+  setWorking(working: readonly Working[]): void {
+    if (working.length === 0 && this.state.working.length === 0) return;
+    this.update({ ...this.state, working });
   }
 
   setError(error: string | null): void {
@@ -242,7 +290,7 @@ export class PlayerStore {
     const clicked: Clicked = { structureId, piece: place.vessel?.pieceId ?? null, at: place.vessel?.along ?? null };
     const result = grade(part, clicked);
     const attempts = (this.state.outcomes[part.id]?.attempts ?? 0) + 1;
-    const answer: Answer = {
+    const answer: ClickAnswer = {
       part_id: part.id,
       attempt: attempts,
       structure_id: structureId,
@@ -261,17 +309,50 @@ export class PlayerStore {
     return true;
   }
 
-  /** Show the answer to the case on screen. It then stops taking clicks. */
+  /**
+   * A pick on the multiple-choice question on screen. Grades it and records the
+   * answer. Returns false, and does nothing, when no question is open, the
+   * option does not exist or it was already picked.
+   */
+  pick(choice: number): boolean {
+    const part = currentPart(this.state);
+    if (part?.kind !== "multiple_choice" || !questionIsOpen(this.state)) return false;
+    const option = part.options[choice];
+    const before = this.state.outcomes[part.id];
+    if (!option || before?.picks?.includes(choice)) return false;
+    const attempts = (before?.attempts ?? 0) + 1;
+    const answer: ChoiceAnswer = { part_id: part.id, attempt: attempts, choice, correct: option.correct, seconds: this.now() - this.shownAt };
+    const picks = [...(before?.picks ?? []), choice];
+    // Too many wrong picks: show the answer, with the right option's feedback.
+    const revealed = !option.correct && outOfPicks(picks.length, part.options.length);
+    const outcome: CaseOutcome = {
+      attempts,
+      correct: option.correct,
+      revealed,
+      statement: revealed ? part.options.find((candidate) => candidate.correct)!.feedback : option.feedback,
+      lastClick: null,
+      picks,
+    };
+    this.update({
+      ...this.state,
+      outcomes: { ...this.state.outcomes, [part.id]: outcome },
+      answers: [...this.state.answers, answer],
+    });
+    return true;
+  }
+
+  /** Show the answer to the case or question on screen. It then stops taking answers. */
   reveal(): void {
     const part = currentPart(this.state);
-    if (part?.kind !== "click_case" || !caseIsOpen(this.state)) return;
+    if (!quizIsOpen(this.state) || (part?.kind !== "click_case" && part?.kind !== "multiple_choice")) return;
     const before = this.state.outcomes[part.id];
     const outcome: CaseOutcome = {
       attempts: before?.attempts ?? 0,
       correct: false,
       revealed: true,
-      statement: part.feedback.correct,
+      statement: part.kind === "click_case" ? part.feedback.correct : part.options.find((option) => option.correct)!.feedback,
       lastClick: null,
+      ...(before?.picks ? { picks: before.picks } : {}),
     };
     this.update({ ...this.state, outcomes: { ...this.state.outcomes, [part.id]: outcome } });
   }

@@ -27,12 +27,14 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from pydantic import TypeAdapter
 
-from app.agent import PART_ADAPTER, Agent, AgentError, Brief, ChatAnswer, NoteFact, PlannedPart, Question, Turn, sources_used
+from app.agent import EXTRA_PREFIX, PART_ADAPTER, Agent, AgentError, Brief, ChatAnswer, NoteFact, PlannedPart, Question, Turn, sources_used
 from app.articles import get_articles
 from app.config import REPO_ROOT, settings
 from app.llm import ClaudeLLM, LLMError, Usage
 from app.notes import read_pages
+from app.progress import Progress
 from app.region import get_region
 from app.store import get_store
 from app.session_schemas import (
@@ -40,12 +42,14 @@ from app.session_schemas import (
     AnswerReply,
     ChatReply,
     ChatRequest,
-    ClickAnswer,
+    ChoiceAnswer,
     ClickCase,
+    MultipleChoice,
     NextReply,
     OpeningAnswer,
     Part,
     PlanItem,
+    ProgressReply,
     Question as QuestionReply,
     RecordedSession,
     ReplyRequest,
@@ -53,9 +57,12 @@ from app.session_schemas import (
     SessionStart,
     SessionState,
     StartRequest,
+    StudentAnswer,
     Summary,
     TutorQuestion,
 )
+
+ANSWER_ADAPTER: TypeAdapter[StudentAnswer] = TypeAdapter(StudentAnswer)
 
 SAMPLE_PATH = REPO_ROOT / "assets" / "fixtures" / "sessions" / "coronary_arteries.json"
 
@@ -72,6 +79,22 @@ _builders = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lumen-build")
 # the student moves on quickly. Parts built at the same time can't see each other's wording,
 # and a plan changed in chat wastes what was built for it, so it is not more.
 BUILD_AHEAD = 2
+# Parts the agent may add after wrong answers, in one session. With no limit, a student
+# who guesses through the options gets a part added after nearly every question.
+MAX_EXTRAS = 2
+# Wrong picks on a multiple-choice question before the browser shows its answer, or fewer
+# if a wrong pick leaves only one option. Kept in step with MAX_WRONG_PICKS in frontend/src/session/player.ts.
+MAX_WRONG_PICKS = 2
+
+
+def _finished(part: ClickCase | MultipleChoice, tries: list[StudentAnswer]) -> bool:
+    """Whether the student is done with a case or question: answered right, or the browser has shown a question's answer."""
+    if not tries:
+        return False
+    if tries[-1].correct:
+        return True
+    wrong = sum(1 for answer in tries if not answer.correct)
+    return isinstance(part, MultipleChoice) and (wrong >= MAX_WRONG_PICKS or len(part.options) - wrong <= 1)
 
 
 class Tutor(Protocol):
@@ -80,8 +103,9 @@ class Tutor(Protocol):
     name: str
 
     def plan(self) -> list[PlanItem]: ...
-    def next_part(self, answers: list[ClickAnswer]) -> Part | None: ...
-    def summary(self, answers: list[ClickAnswer]) -> Summary: ...
+    def answered(self, answers: list[StudentAnswer]) -> None: ...
+    def next_part(self, answers: list[StudentAnswer]) -> Part | None: ...
+    def summary(self, answers: list[StudentAnswer]) -> Summary: ...
 
 
 class SampleTutor:
@@ -96,13 +120,16 @@ class SampleTutor:
     def plan(self) -> list[PlanItem]:
         return self.script.plan
 
-    def next_part(self, answers: list[ClickAnswer]) -> Part | None:
+    def answered(self, answers: list[StudentAnswer]) -> None:
+        """Nothing to do: these parts don't change with the answers."""
+
+    def next_part(self, answers: list[StudentAnswer]) -> Part | None:
         if self.sent >= len(self.script.parts):
             return None
         self.sent += 1
         return self.script.parts[self.sent - 1]
 
-    def summary(self, answers: list[ClickAnswer]) -> Summary:
+    def summary(self, answers: list[StudentAnswer]) -> Summary:
         return self.script.summary
 
 
@@ -114,10 +141,13 @@ class ExploreOnlyTutor:
     def plan(self) -> list[PlanItem]:
         return []
 
-    def next_part(self, answers: list[ClickAnswer]) -> Part | None:
+    def answered(self, answers: list[StudentAnswer]) -> None:
+        """Nothing to do: these parts don't change with the answers."""
+
+    def next_part(self, answers: list[StudentAnswer]) -> Part | None:
         return None
 
-    def summary(self, answers: list[ClickAnswer]) -> Summary:
+    def summary(self, answers: list[StudentAnswer]) -> Summary:
         return Summary(solid=[], shaky=[], sources=[])
 
 
@@ -131,6 +161,9 @@ class AgentTutor:
         self.brief = brief
         self.building: dict[str, Future[Part]] = {}
         self.replanned: set[str] = set()  # cases whose answers have already been looked at
+        # Decisions started as soon as a case or question was solved after a wrong try, by part id.
+        # Each gives the extra part the agent asked for, already built (or why it could not be), or None to carry on.
+        self.deciding: dict[str, Future[tuple[PlannedPart, Part | AgentError] | None]] = {}
         self.dropped: list[str] = []  # parts given up on, with the reason
 
     def plan(self) -> list[PlanItem]:
@@ -142,17 +175,64 @@ class AgentTutor:
             if item.part_id not in self.building:
                 self.building[item.part_id] = _builders.submit(self.agent.build, self.brief, item)
 
-    def next_part(self, answers: list[ClickAnswer]) -> Part | None:
+    def _may_add_after(self, part: Part) -> bool:
+        """Whether the agent may add a part after this one: never after a part it added, and at most MAX_EXTRAS in a session."""
+        added = sum(1 for item in self.brief.plan if item.part_id.startswith(EXTRA_PREFIX))
+        return not part.id.startswith(EXTRA_PREFIX) and added < MAX_EXTRAS
+
+    def _decide_and_build(self, part: ClickCase | MultipleChoice, tries: list[StudentAnswer]) -> tuple[PlannedPart, Part | AgentError] | None:
+        """Ask the agent whether to add a part after this one and, if it wants one, build it."""
+        extra = self.agent.decide(self.brief, part, tries)
+        if extra is None:
+            return None
+        try:
+            return extra, self.agent.build(self.brief, extra)
+        except AgentError as error:
+            return extra, error
+
+    def answered(self, answers: list[StudentAnswer]) -> None:
+        """Called after each answer. Once the student is done with the part on screen after a wrong try, start deciding what comes next.
+
+        Done means answered right, or a question whose answer the browser has shown
+        after too many wrong picks. The decision, and building any extra part, then run
+        on a builder thread while the student reads the feedback, instead of after they
+        press Next. A case whose answer they asked to see, or a skipped part, is decided
+        when Next is pressed: the browser doesn't report those.
+        """
+        last = self.brief.built[-1] if self.brief.built else None
+        if not isinstance(last, (ClickCase, MultipleChoice)) or last.id in self.replanned or last.id in self.deciding or not self._may_add_after(last):
+            return
+        tries = [answer for answer in answers if answer.part_id == last.id]
+        # After the plan's last part the browser goes to the summary and never asks for another part,
+        # so a part added there could not be shown.
+        if self.brief.plan and self.brief.plan[-1].part_id == last.id:
+            return
+        if _finished(last, tries) and any(not answer.correct for answer in tries):
+            self.deciding[last.id] = _builders.submit(self._decide_and_build, last, tries)
+
+    def next_part(self, answers: list[StudentAnswer]) -> Part | None:
         given = len(self.brief.built)
         last = self.brief.built[-1] if self.brief.built else None
-        # After a case the student got wrong, the agent may put one extra part before the rest.
-        if isinstance(last, ClickCase) and last.id not in self.replanned:
+        # After a case or question the student got wrong, the agent may put one extra part before the rest.
+        if isinstance(last, (ClickCase, MultipleChoice)) and last.id not in self.replanned:
             self.replanned.add(last.id)
             tries = [answer for answer in answers if answer.part_id == last.id]
-            if any(not answer.correct for answer in tries):
-                extra = self.agent.decide(self.brief, last, tries)
-                if extra is not None:
-                    self.brief.plan.insert(given, extra)
+            started = self.deciding.pop(last.id, None)
+            if started is not None:
+                decided = started.result()
+            elif any(not answer.correct for answer in tries) and self._may_add_after(last):
+                decided = self._decide_and_build(last, tries)
+            else:
+                decided = None
+            if decided is not None:
+                extra, built = decided
+                self.brief.plan.insert(given, extra)
+                ready: Future[Part] = Future()
+                if isinstance(built, AgentError):
+                    ready.set_exception(built)
+                else:
+                    ready.set_result(built)
+                self.building[extra.part_id] = ready
         while given < len(self.brief.plan):
             item = self.brief.plan[given]
             self.prepare(given)
@@ -186,7 +266,7 @@ class AgentTutor:
         self.prepare(given)
         return answer, True
 
-    def summary(self, answers: list[ClickAnswer]) -> Summary:
+    def summary(self, answers: list[StudentAnswer]) -> Summary:
         solid, shaky = self.agent.summarise(self.brief, answers)
         return Summary(solid=solid, shaky=shaky, sources=sources_used(self.brief.built))
 
@@ -204,7 +284,7 @@ class Session:
     finished: bool = False
     # Set while the tutor waits for the student to answer a question; there is no plan until then.
     question: Question | None = None
-    answers: list[ClickAnswer] = field(default_factory=list)
+    answers: list[StudentAnswer] = field(default_factory=list)
     summary: Summary | None = None
     # One request at a time per session: building and replanning change its state.
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -221,6 +301,11 @@ def load_sample() -> RecordedSession:
     return RecordedSession.model_validate_json(SAMPLE_PATH.read_text(encoding="utf-8"))
 
 
+# What each session's agent is doing, by session id, and by the key a browser sent with
+# POST /api/sessions while that request is running (the session has no id the browser knows yet).
+_progress: dict[str, Progress] = {}
+
+
 def make_agent(usage: Usage) -> Agent:
     """The agent for a new session. Tests replace this to supply scripted replies."""
     return Agent(ClaudeLLM(), get_region(), get_articles(), usage)
@@ -235,6 +320,9 @@ def _find(session_id: str) -> Session:
         if data is not None:
             try:
                 _sessions[session_id] = _restore(data)
+                tutor = _sessions[session_id].tutor
+                if isinstance(tutor, AgentTutor):
+                    _progress[session_id] = tutor.agent.progress
                 return _sessions[session_id]
             except Exception:
                 log.exception("Session %s was saved but could not be loaded", session_id)
@@ -326,7 +414,7 @@ def _restore(data: dict[str, Any]) -> Session:
         sent=[PART_ADAPTER.validate_python(part) for part in data["sent"]],
         finished=data["finished"],
         question=Question(**data["question"]) if data["question"] else None,
-        answers=[ClickAnswer.model_validate(answer) for answer in data["answers"]],
+        answers=[ANSWER_ADAPTER.validate_python(answer) for answer in data["answers"]],
         summary=Summary.model_validate(data["summary"]) if data["summary"] else None,
     )
 
@@ -410,6 +498,9 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     if settings.session_source == "agent":
         try:
             agent = make_agent(usage)
+            _progress[session_id] = agent.progress
+            if body.progress_key:
+                _progress[body.progress_key] = agent.progress
             brief = Brief(request=request)
             if body.notes:
                 brief.notes_file = body.notes.filename
@@ -422,7 +513,11 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
                 if answer:
                     _answered(brief, request, answer)
         except Exception as error:
+            _progress.pop(session_id, None)
             raise _agent_failed(error) from None
+        finally:
+            if body.progress_key:
+                _progress.pop(body.progress_key, None)
         tutor: Tutor = AgentTutor(agent, brief)
     else:
         tutor = SampleTutor(load_sample()) if request else ExploreOnlyTutor()
@@ -433,6 +528,17 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     reply = _opening(session_id, session, answer)
     _save(session_id, session)
     return reply
+
+
+@router.get("/progress/{key}")
+def progress(key: str) -> ProgressReply:
+    """What the tutor is doing right now, for the browser to show while it waits.
+
+    `key` is a session id, or the progress_key sent with POST /api/sessions while
+    that request is running. An unknown key, or a sample session, has nothing under way.
+    """
+    found = _progress.get(key)
+    return ProgressReply(working=[working.model_dump() for working in found.working()] if found else [])
 
 
 @router.post("/{session_id}/reply", response_model_exclude_none=True)
@@ -498,14 +604,21 @@ def next_part(session_id: str) -> NextReply:
 
 
 @router.post("/{session_id}/answers")
-def record_answer(session_id: str, answer: ClickAnswer) -> AnswerReply:
-    """Record one click on a case. The agent reads these to decide what comes next."""
+def record_answer(session_id: str, answer: StudentAnswer) -> AnswerReply:
+    """Record one click on a case, or one pick on a multiple-choice question. The agent reads these to decide what comes next."""
     session = _find(session_id)
     with session.lock:
-        sent = {part.id: part.kind for part in session.sent}
-        if sent.get(answer.part_id) != "click_case":
+        sent = {part.id: part for part in session.sent}
+        part = sent.get(answer.part_id)
+        if isinstance(answer, ChoiceAnswer):
+            if not isinstance(part, MultipleChoice):
+                raise HTTPException(status_code=422, detail=f"{answer.part_id!r} is not a multiple-choice question this session has been sent")
+            if answer.choice >= len(part.options):
+                raise HTTPException(status_code=422, detail=f"choice {answer.choice} is not one of the question's {len(part.options)} options (counted from 0)")
+        elif not isinstance(part, ClickCase):
             raise HTTPException(status_code=422, detail=f"{answer.part_id!r} is not a case this session has been sent")
         session.answers.append(answer)
+        session.tutor.answered(session.answers)
         _save(session_id, session)
         return AnswerReply(plan=session.tutor.plan())
 

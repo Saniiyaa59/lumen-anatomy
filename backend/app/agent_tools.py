@@ -28,7 +28,8 @@ _STRETCH = {
 _IDS = {"type": "array", "items": {"type": "string"}}
 
 # How much of a part's subject must show in its opening view, by kind of part.
-MUST_SEE = {"click_case": 0.9, "damage_slider": 0.6, "pulse": 0.5, "demonstration": 0.3}
+# For a multiple-choice question it is what the question highlights, which the student must be able to make out.
+MUST_SEE = {"click_case": 0.9, "damage_slider": 0.6, "multiple_choice": 0.6, "pulse": 0.5, "demonstration": 0.3}
 _SIDE = ["anterior", "posterior", "left", "right", "superior", "inferior"]
 
 LOOKUP_TOOLS: list[dict[str, Any]] = [
@@ -70,7 +71,7 @@ LOOKUP_TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["demonstration", "pulse", "damage_slider", "click_case"]},
+                "kind": {"type": "string", "enum": list(MUST_SEE)},
                 "stretches": {"type": "array", "items": _STRETCH},
                 "structures": _IDS,
                 "look_at": _IDS,
@@ -194,7 +195,7 @@ _PLACE = {"type": "object", "properties": {"piece": _PIECE, "at": {"type": "numb
 _VIEW = {
     "type": "object",
     "description": "What the camera frames, and from which side of the body. Leave `side` out and the code chooses the side, and adds to `hide`, so the subject shows.",
-    "properties": {"look_at": _IDS, "side": {"type": "string", "enum": _SIDE}},
+    "properties": {"look_at": {**_IDS, "description": "Structure ids to frame. A group id is replaced by the structures in it."}, "side": {"type": "string", "enum": _SIDE}},
     "required": ["look_at"],
 }
 _HIDE = {"type": "array", "items": {"type": "string"}, "description": "Structure or group ids hidden for this part, e.g. what is in front."}
@@ -272,6 +273,38 @@ SUBMIT_PART_TOOLS: dict[str, dict[str, Any]] = {
             "required": ["title", "view", "hide", "story", "question", "answer", "feedback"],
         },
     },
+    "multiple_choice": {
+        "name": "submit_multiple_choice",
+        "description": (
+            "Hand in a multiple-choice question: two to five answers, exactly one right, each with feedback the student reads after picking it. "
+            "To ask them to name something, highlight it and ask what it is. Without a highlight it quizzes what the model can't show."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **_COMMON,
+                "highlight": {**_IDS, "description": "Structures to mark on the model, when the question is about them. May be empty."},
+                "story": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "An invented patient, three sentences at most, or null for a plain question."},
+                "question": {"type": "string"},
+                "options": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "The answer, a few words."},
+                            "correct": {"type": "boolean"},
+                            "feedback": {**_STATEMENT, "description": "Why this answer is right, or why it is wrong. Needs a source like any statement."},
+                        },
+                        "required": ["text", "correct", "feedback"],
+                    },
+                },
+                "statements": {**_STATEMENTS, "description": "Usually empty. Anything the student should read before the question."},
+            },
+            "required": ["title", "view", "hide", "highlight", "story", "question", "options"],
+        },
+    },
 }
 
 _PART_KINDS = list(SUBMIT_PART_TOOLS)
@@ -293,7 +326,7 @@ SUBMIT_PLAN_TOOL: dict[str, Any] = {
         "properties": {
             "can_show": {"type": "array", "items": {"type": "string"}, "description": "Short sentences: what the model can show for this request."},
             "words_only": {"type": "array", "items": {"type": "string"}, "description": "Short sentences: what matters for this request but can only be explained, because the model lacks it."},
-            "parts": {"type": "array", "items": _PLANNED_PART},
+            "parts": {"type": "array", "items": _PLANNED_PART, "minItems": 2, "maxItems": 5, "description": "Two to five parts, in order."},
         },
         "required": ["can_show", "words_only", "parts"],
     },
@@ -334,7 +367,9 @@ ANSWER_STUDENT_TOOL: dict[str, Any] = {
             "new_plan": {
                 "type": "array",
                 "items": _PLANNED_PART,
-                "description": "Only to change direction: the parts that replace every part the student has not been given yet. Leave it out to keep the plan.",
+                "minItems": 1,
+                "maxItems": 5,
+                "description": "Only to change direction: one to five parts that replace every part the student has not been given yet. Leave it out to keep the plan.",
             },
         },
         "required": ["statements", "point_to"],

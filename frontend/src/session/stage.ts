@@ -87,7 +87,7 @@ export class Stage {
       } else {
         // Hide first: what is hidden decides which side the structures can be seen from.
         this.visibility.setHidden(hiddenBy(part.hide));
-        this.controller.setHighlighted(part.kind === "demonstration" ? part.highlight : []);
+        this.controller.setHighlighted(part.kind === "demonstration" || part.kind === "multiple_choice" ? part.highlight : []);
         this.controller.frame(part.view.look_at, part.view.side);
         if (part.kind === "pulse") {
           const route = pulseRoute(centerlines, part.from, part.to);

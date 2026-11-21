@@ -1,19 +1,23 @@
 import "../session/session.css";
 import { Fragment, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import sampleSession from "../../../assets/fixtures/sessions/coronary_arteries.json";
-import { getTutorSource } from "../api.ts";
+import { getTutorSource, type Working } from "../api.ts";
 import { selectionStore } from "../selection/store.ts";
-import { parseSession, type ClickCase, type DamageSlider, type Part, type Source, type Statement } from "../session/format.ts";
+import { atlasTitle, parseSession, type ClickCase, type DamageSlider, type MultipleChoice, type Part, type Source, type Statement } from "../session/format.ts";
 import { inTarget } from "../session/grade.ts";
 import { liveSessions } from "../session/live.ts";
-import { caseIsOpen, playerStore, usePlayer, type Asking, type CaseOutcome, type PlayerState, type SessionMessage } from "../session/player.ts";
+import { currentPart, playerStore, questionIsOpen, quizIsOpen, usePlayer, type Asking, type CaseOutcome, type PlayerState, type SessionMessage } from "../session/player.ts";
 
 const KIND_NAMES: Record<Part["kind"], string> = {
   demonstration: "Demonstration",
   pulse: "Follow the flow",
   damage_slider: "Try it",
   click_case: "Case",
+  multiple_choice: "Question",
 };
+
+/** Parts the student answers, whose result shows in the thread and the summary. */
+const isQuiz = (part: Part): part is ClickCase | MultipleChoice => part.kind === "click_case" || part.kind === "multiple_choice";
 
 const mm = (metres: number) => `${Math.round(metres * 1000)} mm`;
 
@@ -48,11 +52,11 @@ function SourceTag({ source }: { source: Source }) {
       );
     case "atlas":
       return source.url ? (
-        <a className="source" href={source.url} target="_blank" rel="noreferrer">
-          Atlas: {source.article}
+        <a className="source" href={source.url} target="_blank" rel="noreferrer" title={`Atlas entry: ${source.article}`}>
+          Atlas: {atlasTitle(source)}
         </a>
       ) : (
-        <span className="source">Atlas: {source.article}</span>
+        <span className="source">Atlas: {atlasTitle(source)}</span>
       );
     case "web":
       return (
@@ -132,6 +136,76 @@ function CaseControls({ part, outcome }: { part: ClickCase; outcome: CaseOutcome
   );
 }
 
+/** How one option looks: not picked yet, picked and wrong, or the right one once it is known. */
+function optionState(index: number, part: MultipleChoice, outcome: CaseOutcome | undefined): "open" | "wrong" | "correct" {
+  const done = outcome?.correct || outcome?.revealed;
+  if (done && part.options[index].correct) return "correct";
+  return outcome?.picks?.includes(index) ? "wrong" : "open";
+}
+
+function ChoiceControls({ part, outcome }: { part: MultipleChoice; outcome: CaseOutcome | undefined }) {
+  const done = outcome?.correct || outcome?.revealed;
+  const right = part.options.find((option) => option.correct)!;
+  const lastPick = outcome?.picks?.at(-1);
+  // The feedback on the latest wrong pick, which still matters once the answer is shown.
+  const missed = lastPick !== undefined && !part.options[lastPick].correct ? part.options[lastPick] : null;
+  const feedback = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    feedback.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [outcome?.attempts, outcome?.revealed]);
+  return (
+    <div className="thread-task">
+      {part.story && <p className="thread-story">{part.story}</p>}
+      <p className="thread-question">{part.question}</p>
+      <div className="thread-options" role="group" aria-label="Answers">
+        {part.options.map((option, index) => {
+          const look = optionState(index, part, outcome);
+          return (
+            <button
+              type="button"
+              key={index}
+              className="thread-option"
+              data-state={look}
+              disabled={done || look !== "open"}
+              aria-keyshortcuts={String(index + 1)}
+              onClick={() => playerStore.pick(index)}
+            >
+              <span className="thread-option-key" aria-hidden="true">
+                {index + 1}
+              </span>
+              {option.text}
+            </button>
+          );
+        })}
+      </div>
+      {!done && (
+        <p className="thread-hint">
+          Press 1 to {part.options.length}, or click an answer.{part.highlight.length > 0 && " Names are hidden on the model until you answer."}
+        </p>
+      )}
+      <div ref={feedback}>
+        {missed && !outcome?.correct && (
+          <div className="thread-feedback" data-verdict="wrong" role="status">
+            <strong>Not quite</strong>
+            <StatementView statement={missed.feedback} />
+          </div>
+        )}
+        {done && (
+          <div className="thread-feedback" data-verdict={outcome?.correct ? "correct" : "revealed"} role="status">
+            <strong>{outcome?.correct ? "Correct" : `The answer: ${right.text}`}</strong>
+            <StatementView statement={right.feedback} />
+          </div>
+        )}
+      </div>
+      {!done && (outcome?.attempts ?? 0) > 0 && (
+        <button type="button" className="thread-link" onClick={() => playerStore.reveal()}>
+          Show me the answer
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** One part of the session, as a card in the thread. Only the part on screen is open. */
 function PartCard({ part, step, state }: { part: Part; step: number; state: PlayerState }) {
   const active = step === state.index;
@@ -145,7 +219,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
       <button type="button" className="thread-card thread-card-closed" onClick={() => playerStore.goTo(step)}>
         <span className="thread-step">{step + 1}</span>
         <span className="thread-card-title">{part.title}</span>
-        {part.kind === "click_case" && <span className="thread-card-note">{caseResult(state.outcomes[part.id])}</span>}
+        {isQuiz(part) && <span className="thread-card-note">{caseResult(state.outcomes[part.id])}</span>}
       </button>
     );
   }
@@ -161,6 +235,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
         <StatementView statement={statement} key={i} />
       ))}
       {part.kind === "click_case" && <CaseControls part={part} outcome={state.outcomes[part.id]} />}
+      {part.kind === "multiple_choice" && <ChoiceControls part={part} outcome={state.outcomes[part.id]} />}
     </article>
   );
 }
@@ -168,7 +243,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
 function SummaryCard({ state }: { state: PlayerState }) {
   const session = state.session!;
   const summary = session.summary!;
-  const cases = session.parts.filter((part) => part.kind === "click_case");
+  const cases = session.parts.filter(isQuiz);
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
     card.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -333,6 +408,7 @@ function StartScreen({ state }: { state: PlayerState }) {
           {source === "agent" ? "The tutor is reading and planning. This can take a minute…" : "Starting your session…"}
         </p>
       )}
+      {state.pending && <WorkingNow state={state} />}
       {state.error && (
         <div className="thread-error" role="alert">
           <p>The session couldn't start. {state.error}</p>
@@ -406,6 +482,7 @@ function Conversation({ asking, state }: { asking: Asking; state: PlayerState })
             The tutor is thinking about your answer. This can take a minute…
           </p>
         )}
+        {state.pending && <WorkingNow state={state} />}
         {state.error && (
           <div className="thread-error" role="alert">
             <p>{state.error}</p>
@@ -422,10 +499,72 @@ function Conversation({ asking, state }: { asking: Asking; state: PlayerState })
  * tutor's plan, then each part as a card, with the way forward and an input
  * box at the bottom.
  */
+/**
+ * The piece of work the student is waiting on, of those the tutor has under way:
+ * a decision about their answers or the next part when they asked for it, otherwise
+ * whatever began first. Parts further ahead are being built at the same time.
+ */
+function waitedOn(state: PlayerState): Working | null {
+  const { working, session, index } = state;
+  if (working.length === 0) return null;
+  const current = session?.parts[index]?.id;
+  // The part being fetched is the first one not yet received.
+  const next = session?.plan[session.parts.length]?.part_id;
+  return (
+    working.find((item) => item.stage === `decide after ${current}`) ??
+    working.find((item) => item.stage === `part ${next}`) ??
+    working.find((item) => !item.stage.startsWith("part ")) ??
+    working[0]
+  );
+}
+
+/** What the tutor is doing, under the line that says it is busy. */
+function WorkingNow({ state }: { state: PlayerState }) {
+  const item = waitedOn(state);
+  if (!item) return null;
+  return (
+    <p className="thread-working" aria-live="polite">
+      <span className="thread-working-doing">{item.doing}</span>
+      {item.detail && <span className="thread-working-detail">{item.detail}</span>}
+      <span className="thread-working-time">{Math.round(item.seconds)} s</span>
+    </p>
+  );
+}
+
+/** Whether a key press is meant for a text box, a slider or another control rather than for the session. */
+function typing(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+}
+
+/**
+ * Keys for the session: 1 to 5 pick an answer to the question on screen, and
+ * Enter moves on once nothing is waiting for an answer. Ignored while typing.
+ */
+function useSessionKeys(state: PlayerState): void {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || typing(event.target)) return;
+      const part = currentPart(state);
+      if (part?.kind === "multiple_choice" && questionIsOpen(state) && /^[1-9]$/.test(event.key)) {
+        if (playerStore.pick(Number(event.key) - 1)) event.preventDefault();
+        return;
+      }
+      // Enter on a focused button already presses it; otherwise it means Next.
+      if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement) && state.session && !state.pending && !quizIsOpen(state)) {
+        event.preventDefault();
+        void liveSessions.advance();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [state]);
+}
+
 export default function SessionThread() {
   const state = usePlayer();
   const { session, index } = state;
-  const waiting = caseIsOpen(state);
+  const waiting = quizIsOpen(state);
+  useSessionKeys(state);
 
   if (!session && state.asking) return <Conversation asking={state.asking} state={state} />;
   if (!session) {
@@ -530,6 +669,7 @@ export default function SessionThread() {
                 : "Preparing what comes next…"}
           </p>
         )}
+        {state.pending && <WorkingNow state={state} />}
         {state.error && (
           <div className="thread-error" role="alert">
             <p>{state.error}</p>

@@ -17,7 +17,7 @@ SESSION_FORMAT = "lumen.session/0.1"
 
 Text = Annotated[str, Field(min_length=1)]
 Link = Annotated[str, Field(pattern=r"^https?://")]
-PartKind = Literal["demonstration", "pulse", "damage_slider", "click_case"]
+PartKind = Literal["demonstration", "pulse", "damage_slider", "click_case", "multiple_choice"]
 
 
 class _Model(BaseModel):
@@ -184,7 +184,40 @@ class ClickCase(_Part):
         return self
 
 
-Part = Annotated[Demonstration | Pulse | DamageSlider | ClickCase, Field(discriminator="kind")]
+class Option(_Model):
+    """One answer to a multiple-choice question, with what the student reads after picking it."""
+
+    text: Text  # short, e.g. "Right coronary artery"; it is an answer, not a claim, so it has no source
+    correct: bool
+    feedback: Statement  # why this answer is right or wrong
+
+
+class MultipleChoice(_Part):
+    """A question with a few answers to pick from, exactly one of them right.
+
+    With `highlight`, the model marks some structures and the question can be
+    about them ("What is the highlighted vessel?"). Without, it quizzes what the
+    model can't show, such as which wall an artery feeds.
+    """
+
+    kind: Literal["multiple_choice"]
+    highlight: list[Text]  # structures marked on the model; may be empty
+    story: Text | None  # an invented patient, so it has no source; null for a plain question
+    question: Text
+    options: list[Option] = Field(min_length=2, max_length=5)
+
+    @model_validator(mode="after")
+    def one_right_answer(self) -> "MultipleChoice":
+        right = sum(1 for option in self.options if option.correct)
+        if right != 1:
+            raise ValueError(f"exactly one option must be correct, not {right}")
+        texts = [option.text.strip().lower() for option in self.options]
+        if len(set(texts)) != len(texts):
+            raise ValueError("two options have the same text")
+        return self
+
+
+Part = Annotated[Demonstration | Pulse | DamageSlider | ClickCase | MultipleChoice, Field(discriminator="kind")]
 
 
 class PlanItem(_Model):
@@ -309,6 +342,9 @@ class NotesUpload(_Model):
 class StartRequest(_Model):
     request: str = ""  # what the student asked; empty to just explore the model
     notes: NotesUpload | None = None
+    # Any string the browser makes up, to ask GET /api/sessions/progress/{key} what the tutor
+    # is doing before the session (and its id) exists. Optional.
+    progress_key: str | None = Field(default=None, max_length=100)
 
 
 class ClickAnswer(_Model):
@@ -328,6 +364,19 @@ class ClickAnswer(_Model):
         if (self.piece is None) != (self.at is None):
             raise ValueError("piece and at must both be given or both be null")
         return self
+
+
+class ChoiceAnswer(_Model):
+    """One pick on a multiple-choice question, already graded by the browser."""
+
+    part_id: Text
+    attempt: int = Field(ge=1)
+    choice: int = Field(ge=0)  # which option, counted from 0 in the order the part lists them
+    correct: bool
+    seconds: float = Field(ge=0)  # from the question appearing to the pick
+
+
+StudentAnswer = ClickAnswer | ChoiceAnswer  # told apart by their fields: a click has `structure_id`, a pick has `choice`
 
 
 # Replies that are not part of a recorded session.
@@ -356,6 +405,19 @@ class Timing(_Model):
     cached_share: float  # of the input, the share read from the cache
 
 
+class Working(_Model):
+    """One piece of work the tutor has under way."""
+
+    stage: str  # as in Timing.stage
+    doing: str  # for the student, e.g. "Building “Name the artery”"
+    detail: str | None  # the latest step, e.g. "Reading the atlas page on Ventricle (heart)"
+    seconds: float  # since it began
+
+
+class ProgressReply(_Model):
+    working: list[Working]  # empty when nothing is under way, or the key is not known (yet)
+
+
 class SessionState(_Model):
     """What the backend holds for one session. For checking and debugging, not for the student."""
 
@@ -367,7 +429,7 @@ class SessionState(_Model):
     notes_bytes: int
     parts_sent: int
     finished: bool
-    answers: list[ClickAnswer]
+    answers: list[StudentAnswer]
     dropped: list[str]  # parts the agent gave up on, with the reason
     # What the session has cost so far, when the agent built it.
     claude_calls: int

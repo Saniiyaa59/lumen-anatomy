@@ -19,7 +19,8 @@
     { "part_id": "origins", "title": "Where the two coronary arteries start", "kind": "demonstration" },
     { "part_id": "left-divides", "title": "How the left coronary artery divides", "kind": "pulse" },
     { "part_id": "block-the-lad", "title": "What a blockage cuts off", "kind": "damage_slider" },
-    { "part_id": "case-septum", "title": "Case: find the blockage", "kind": "click_case" }
+    { "part_id": "case-septum", "title": "Case: find the blockage", "kind": "click_case" },
+    { "part_id": "name-the-artery", "title": "Name the artery", "kind": "multiple_choice" }
   ],
   "parts": [
     {
@@ -198,6 +199,47 @@
           }
         ]
       }
+    },
+    {
+      "id": "name-the-artery",
+      "kind": "multiple_choice",
+      "title": "Name the artery",
+      "view": { "look_at": ["right_coronary_artery"], "side": "anterior" },
+      "hide": ["ascending_aorta", "unnamed_coronary_sinus"],
+      "statements": [],
+      "highlight": ["right_coronary_artery"],
+      "story": null,
+      "question": "Which artery is highlighted?",
+      "options": [
+        {
+          "text": "Right coronary artery",
+          "correct": true,
+          "feedback": {
+            "text": "Right. It runs down the groove on the right side of the heart, towards the back.",
+            "source": { "type": "atlas", "article": "Right coronary artery", "url": "https://en.wikipedia.org/wiki/Right_coronary_artery" }
+          }
+        },
+        {
+          "text": "Left anterior descending artery",
+          "correct": false,
+          "feedback": {
+            "text": "No. That artery runs down the front of the heart, between the two ventricles.",
+            "source": { "type": "atlas", "article": "Left anterior descending artery", "url": "https://en.wikipedia.org/wiki/Left_anterior_descending_artery" }
+          }
+        },
+        {
+          "text": "Circumflex artery",
+          "correct": false,
+          "feedback": {
+            "text": "No. That artery curves round the left side of the heart, towards the back.",
+            "source": {
+              "type": "atlas",
+              "article": "Circumflex artery of heart",
+              "url": "https://en.wikipedia.org/wiki/Circumflex_branch_of_left_coronary_artery"
+            }
+          }
+        }
+      ]
     }
   ],
   "summary": {

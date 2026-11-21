@@ -8,6 +8,8 @@ import { caseIsOpen, currentPart, nextNeeds, PlayerStore } from "./player.ts";
 const recorded = parseSession(sample);
 const LAD = "anterior_interventricular_artery";
 const TOTAL = recorded.parts.length;
+/** Where the sample's click case sits in it. */
+const CASE = recorded.parts.findIndex((part) => part.kind === "click_case");
 
 const { parts: _parts, summary: _summary, ...startFields } = sample;
 
@@ -73,7 +75,7 @@ describe("LiveSessions", () => {
     const { api, player, live } = fakeBackend();
     await live.start("Prepare me on coronary dominance", null);
     const state = player.getState();
-    expect(api.startSession).toHaveBeenCalledWith("Prepare me on coronary dominance", null);
+    expect(api.startSession).toHaveBeenCalledWith("Prepare me on coronary dominance", null, expect.any(String));
     expect(state).toMatchObject({ live: true, pending: false, error: null, index: 0 });
     expect(state.session?.request).toBe("Prepare me on coronary dominance");
     expect(state.session?.plan).toHaveLength(TOTAL);
@@ -128,7 +130,7 @@ describe("LiveSessions", () => {
   it("sends each answer to the backend once, as it is given", async () => {
     const { api, player, live } = fakeBackend();
     await live.start("Prepare me", null);
-    for (let step = 1; step < TOTAL; step++) await live.advance();
+    for (let step = 1; step <= CASE; step++) await live.advance();
     expect(caseIsOpen(player.getState())).toBe(true);
 
     player.answer(LAD, clickOn(`${LAD}.0`, 0.08));
@@ -185,7 +187,7 @@ describe("LiveSessions", () => {
   it("reports an answer that couldn't be sent, without losing it", async () => {
     const { api, player, live } = fakeBackend();
     await live.start("Prepare me", null);
-    for (let step = 1; step < TOTAL; step++) await live.advance();
+    for (let step = 1; step <= CASE; step++) await live.advance();
     api.sendAnswer.mockRejectedValueOnce(new Error("The backend can't be reached."));
     player.answer(LAD, clickOn(`${LAD}.0`, 0.02));
     await settle();
@@ -217,7 +219,7 @@ describe("LiveSessions", () => {
   it("does not resend answers given before a session was reopened from the history", async () => {
     const first = fakeBackend();
     await first.live.start("Prepare me", null);
-    for (let step = 1; step < TOTAL; step++) await first.live.advance();
+    for (let step = 1; step <= CASE; step++) await first.live.advance();
     first.player.answer(LAD, clickOn(`${LAD}.0`, 0.08));
     const saved = first.player.getState();
 
@@ -384,5 +386,38 @@ describe("exploring with no plan", () => {
       ["tutor", "What does it cover?"],
       ["student", "Coronary arteries"],
     ]);
+  });
+
+  it("sends a pick on a question to the backend", async () => {
+    const { api, player, live } = fakeBackend();
+    await live.start("Prepare me", null);
+    const question = recorded.parts.findIndex((part) => part.kind === "multiple_choice");
+    for (let step = 1; step <= question; step++) await live.advance();
+    player.pick(1);
+    expect(api.sendAnswer).toHaveBeenCalledTimes(1);
+    expect(api.sendAnswer.mock.calls[0][1]).toMatchObject({ choice: 1, attempt: 1, correct: false });
+  });
+
+  it("asks what the tutor is doing while it waits, shows it, and clears it when the part arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      let release: (value: unknown) => void = () => undefined;
+      const { api, player } = fakeBackend();
+      const working = [{ stage: "part p2", doing: "Building “p2”", detail: "Choosing a view", seconds: 3 }];
+      const getProgress = vi.fn(async () => working);
+      const watched = new LiveSessions(player, { ...api, getProgress });
+      await watched.start("Prepare me", null);
+      expect(getProgress).not.toHaveBeenCalled(); // the fake backend answers at once
+      api.nextPart.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+      const advancing = watched.advance();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(getProgress).toHaveBeenCalledWith("s1");
+      expect(player.getState().working).toEqual(working);
+      release({ part: structuredClone(sample.parts[1]), plan: sample.plan, done: false });
+      await advancing;
+      expect(player.getState().working).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

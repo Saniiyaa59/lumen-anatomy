@@ -94,7 +94,7 @@ def test_articles_can_be_read_from_any_file(tmp_path):
 
 def test_the_sample_refers_only_to_real_things():
     assert check_session(load_sample(), region, articles) == []
-    assert [check_part(part, region, articles) for part in load_sample().parts] == [[], [], [], []]
+    assert [check_part(part, region, articles) for part in load_sample().parts] == [[], [], [], [], []]
 
 
 def test_check_names_a_structure_that_does_not_exist():

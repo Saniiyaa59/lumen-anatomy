@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import sample from "../../../assets/fixtures/sessions/coronary_arteries.json";
 import { centerlines } from "../centerlines.ts";
-import { checkSession, parseSession, PART_KINDS } from "./format.ts";
+import { atlasTitle, checkSession, parseSession, PART_KINDS } from "./format.ts";
 
 /** A copy of the sample with one change made to it. */
 function broken(change: (session: any) => void): unknown {
@@ -15,7 +15,7 @@ const problemsWith = (change: (session: any) => void) => checkSession(broken(cha
 describe("the sample session", () => {
   it("fits the format", () => {
     expect(checkSession(sample)).toEqual([]);
-    expect(parseSession(sample).parts).toHaveLength(4);
+    expect(parseSession(sample).parts).toHaveLength(5);
   });
 
   it("has one part of every kind, so the player can be built against it", () => {
@@ -154,5 +154,44 @@ describe("parseSession", () => {
       s.parts[0].hide = ["spleen"];
     });
     expect(() => parseSession(bad)).toThrow(/does not fit the format[\s\S]*session\.request[\s\S]*spleen/);
+  });
+});
+
+describe("a multiple-choice question", () => {
+  const at = sample.parts.findIndex((part) => part.kind === "multiple_choice");
+  const path = `session.parts[${at}]`;
+  const withQuestion = (change: (question: any) => void) => problemsWith((s) => change(s.parts[at]));
+
+  it("may have no story, but needs a question", () => {
+    expect(withQuestion((q) => (q.story = "A man has chest pain."))).toEqual([]);
+    expect(withQuestion((q) => (q.question = ""))).toEqual([`${path}.question: must be a non-empty string`]);
+  });
+
+  it("needs exactly one right option", () => {
+    expect(withQuestion((q) => (q.options[1].correct = true))).toEqual([`${path}.options: exactly one option must be correct, not 2`]);
+    expect(withQuestion((q) => (q.options[0].correct = false))).toEqual([`${path}.options: exactly one option must be correct, not 0`]);
+  });
+
+  it("needs two to five options, each different, each with sourced feedback", () => {
+    expect(withQuestion((q) => (q.options = q.options.slice(0, 1)))).toContain(`${path}.options: must have 2 to 5 options`);
+    expect(withQuestion((q) => (q.options[2].text = "right coronary ARTERY"))).toEqual([`${path}.options[2].text: is the same as another option's`]);
+    expect(withQuestion((q) => delete q.options[1].feedback.source)).toEqual([`${path}.options[1].feedback.source: must be an object`]);
+  });
+
+  it("may highlight only real structures", () => {
+    expect(withQuestion((q) => (q.highlight = ["spleen"]))).toEqual([`${path}.highlight[0]: "spleen" is not a structure in this region`]);
+  });
+});
+
+describe("the name shown for an atlas source", () => {
+  it("is the title of the page it links to, not the atlas entry's name", () => {
+    expect(atlasTitle({ article: "Left ventricle", url: "https://en.wikipedia.org/wiki/Ventricle_(heart)" })).toBe("Ventricle (heart)");
+    expect(atlasTitle({ article: "x", url: "https://en.wikipedia.org/wiki/Sinoatrial_node#Blood_supply" })).toBe("Sinoatrial node");
+    expect(atlasTitle({ article: "x", url: "https://en.wikipedia.org/wiki/M%C3%BCller%27s_muscle" })).toBe("Müller's muscle");
+  });
+
+  it("falls back to the entry's name with no link, or a link that is not a Wikipedia article", () => {
+    expect(atlasTitle({ article: "Left ventricle", url: null })).toBe("Left ventricle");
+    expect(atlasTitle({ article: "Left ventricle", url: "https://example.org/heart" })).toBe("Left ventricle");
   });
 });

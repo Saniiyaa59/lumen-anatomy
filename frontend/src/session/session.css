@@ -454,6 +454,83 @@ a.source:hover {
   font-weight: 600;
 }
 
+/* A multiple-choice question's answers. */
+.thread-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.thread-option {
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.thread-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The number key that picks this answer. */
+.thread-option-key {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.thread-option[data-state='correct'] {
+  animation: thread-right 0.5s ease-out;
+}
+
+@keyframes thread-right {
+  from {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.6);
+  }
+  to {
+    box-shadow: 0 0 0 8px rgba(74, 222, 128, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-option[data-state='correct'] {
+    animation: none;
+  }
+}
+
+.thread-option:hover:not(:disabled) {
+  border-color: #8fc1ff;
+  background: rgba(143, 193, 255, 0.1);
+}
+
+.thread-option:disabled {
+  cursor: default;
+}
+
+.thread-option[data-state='wrong'] {
+  border-color: #ff5a5a;
+  color: rgba(255, 255, 255, 0.6);
+  text-decoration: line-through;
+}
+
+.thread-option[data-state='correct'] {
+  border-color: #4ade80;
+  background: rgba(74, 222, 128, 0.12);
+}
+
 .thread-feedback {
   margin-top: 12px;
   padding: 10px 12px;
@@ -668,4 +745,31 @@ a.source:hover {
   color: rgba(232, 236, 239, 0.3);
   background: none;
   cursor: default;
+}
+
+/* What the tutor is doing while the student waits: the work, its latest step, and how long it has taken. */
+.thread-working {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.thread-working-doing {
+  font-weight: 600;
+}
+
+.thread-working-detail::before {
+  content: "·";
+  margin-right: 8px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.thread-working-time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.45);
 }
