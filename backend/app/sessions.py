@@ -34,6 +34,7 @@ from app.articles import get_articles
 from app.config import REPO_ROOT, settings
 from app.llm import ClaudeLLM, LLMError, Usage
 from app.notes import read_pages
+from app.progress import Progress
 from app.region import get_region
 from app.store import get_store
 from app.session_schemas import (
@@ -48,6 +49,7 @@ from app.session_schemas import (
     OpeningAnswer,
     Part,
     PlanItem,
+    ProgressReply,
     Question as QuestionReply,
     RecordedSession,
     ReplyRequest,
@@ -80,6 +82,19 @@ BUILD_AHEAD = 2
 # Parts the agent may add after wrong answers, in one session. With no limit, a student
 # who guesses through the options gets a part added after nearly every question.
 MAX_EXTRAS = 2
+# Wrong picks on a multiple-choice question before the browser shows its answer, or fewer
+# if a wrong pick leaves only one option. Kept in step with MAX_WRONG_PICKS in frontend/src/session/player.ts.
+MAX_WRONG_PICKS = 2
+
+
+def _finished(part: ClickCase | MultipleChoice, tries: list[StudentAnswer]) -> bool:
+    """Whether the student is done with a case or question: answered right, or the browser has shown a question's answer."""
+    if not tries:
+        return False
+    if tries[-1].correct:
+        return True
+    wrong = sum(1 for answer in tries if not answer.correct)
+    return isinstance(part, MultipleChoice) and (wrong >= MAX_WRONG_PICKS or len(part.options) - wrong <= 1)
 
 
 class Tutor(Protocol):
@@ -176,17 +191,23 @@ class AgentTutor:
             return extra, error
 
     def answered(self, answers: list[StudentAnswer]) -> None:
-        """Called after each answer. Once the part on screen is solved after a wrong try, start deciding what comes next.
+        """Called after each answer. Once the student is done with the part on screen after a wrong try, start deciding what comes next.
 
-        The decision, and building any extra part, then run on a builder thread while
-        the student reads the feedback, instead of after they press Next. A part left
-        without a right answer (the answer was shown, or skipped) is decided when Next is pressed.
+        Done means answered right, or a question whose answer the browser has shown
+        after too many wrong picks. The decision, and building any extra part, then run
+        on a builder thread while the student reads the feedback, instead of after they
+        press Next. A case whose answer they asked to see, or a skipped part, is decided
+        when Next is pressed: the browser doesn't report those.
         """
         last = self.brief.built[-1] if self.brief.built else None
         if not isinstance(last, (ClickCase, MultipleChoice)) or last.id in self.replanned or last.id in self.deciding or not self._may_add_after(last):
             return
         tries = [answer for answer in answers if answer.part_id == last.id]
-        if tries and tries[-1].correct and any(not answer.correct for answer in tries):
+        # After the plan's last part the browser goes to the summary and never asks for another part,
+        # so a part added there could not be shown.
+        if self.brief.plan and self.brief.plan[-1].part_id == last.id:
+            return
+        if _finished(last, tries) and any(not answer.correct for answer in tries):
             self.deciding[last.id] = _builders.submit(self._decide_and_build, last, tries)
 
     def next_part(self, answers: list[StudentAnswer]) -> Part | None:
@@ -280,6 +301,11 @@ def load_sample() -> RecordedSession:
     return RecordedSession.model_validate_json(SAMPLE_PATH.read_text(encoding="utf-8"))
 
 
+# What each session's agent is doing, by session id, and by the key a browser sent with
+# POST /api/sessions while that request is running (the session has no id the browser knows yet).
+_progress: dict[str, Progress] = {}
+
+
 def make_agent(usage: Usage) -> Agent:
     """The agent for a new session. Tests replace this to supply scripted replies."""
     return Agent(ClaudeLLM(), get_region(), get_articles(), usage)
@@ -294,6 +320,9 @@ def _find(session_id: str) -> Session:
         if data is not None:
             try:
                 _sessions[session_id] = _restore(data)
+                tutor = _sessions[session_id].tutor
+                if isinstance(tutor, AgentTutor):
+                    _progress[session_id] = tutor.agent.progress
                 return _sessions[session_id]
             except Exception:
                 log.exception("Session %s was saved but could not be loaded", session_id)
@@ -469,6 +498,9 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     if settings.session_source == "agent":
         try:
             agent = make_agent(usage)
+            _progress[session_id] = agent.progress
+            if body.progress_key:
+                _progress[body.progress_key] = agent.progress
             brief = Brief(request=request)
             if body.notes:
                 brief.notes_file = body.notes.filename
@@ -481,7 +513,11 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
                 if answer:
                     _answered(brief, request, answer)
         except Exception as error:
+            _progress.pop(session_id, None)
             raise _agent_failed(error) from None
+        finally:
+            if body.progress_key:
+                _progress.pop(body.progress_key, None)
         tutor: Tutor = AgentTutor(agent, brief)
     else:
         tutor = SampleTutor(load_sample()) if request else ExploreOnlyTutor()
@@ -492,6 +528,17 @@ def start_session(body: StartRequest) -> SessionStart | TutorQuestion:
     reply = _opening(session_id, session, answer)
     _save(session_id, session)
     return reply
+
+
+@router.get("/progress/{key}")
+def progress(key: str) -> ProgressReply:
+    """What the tutor is doing right now, for the browser to show while it waits.
+
+    `key` is a session id, or the progress_key sent with POST /api/sessions while
+    that request is running. An unknown key, or a sample session, has nothing under way.
+    """
+    found = _progress.get(key)
+    return ProgressReply(working=[working.model_dump() for working in found.working()] if found else [])
 
 
 @router.post("/{session_id}/reply", response_model_exclude_none=True)

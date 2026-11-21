@@ -16,7 +16,16 @@ import {
 import { currentPart, nextNeeds, playerStore, type ChatLine, type PlayerStore, type SessionMessage } from "./player.ts";
 
 /** The backend calls a live session makes; lets tests pass a stand-in. */
-export type SessionApi = Pick<typeof backend, "startSession" | "replyToTutor" | "chat" | "nextPart" | "sendAnswer" | "finishSession">;
+export type SessionApi = Pick<typeof backend, "startSession" | "replyToTutor" | "chat" | "nextPart" | "sendAnswer" | "finishSession"> &
+  Partial<Pick<typeof backend, "getProgress">>;
+
+/** How often to ask what the tutor is doing while waiting for it. */
+const PROGRESS_EVERY_MS = 1000;
+
+/** A key for asking about a session's progress before the backend has given it an id. */
+function newProgressKey(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
@@ -67,7 +76,8 @@ export class LiveSessions {
     this.player.setPending(true);
     try {
       const upload = notes ? { filename: notes.name, data: await toBase64(notes) } : null;
-      const reply = await this.api.startSession(request, upload);
+      const key = newProgressKey();
+      const reply = await this.watching(key, () => this.api.startSession(request, upload, key));
       return await this.open(reply, []);
     } catch (error) {
       this.player.setError(messageOf(error));
@@ -85,7 +95,7 @@ export class LiveSessions {
     this.player.setAsking({ ...asking, chat: [...asking.chat, { from: "student", text }] });
     this.player.setPending(true);
     try {
-      const reply = await this.api.replyToTutor(asking.session_id, text);
+      const reply = await this.watching(asking.session_id, () => this.api.replyToTutor(asking.session_id, text));
       return await this.open(reply, [...asking.chat, { from: "student", text }]);
     } catch (error) {
       // The backend forgets a reply that failed, so take it back off the screen too.
@@ -112,7 +122,7 @@ export class LiveSessions {
     this.player.setMessages([...before, { from: "student", text, statements: [], after }]);
     this.player.setPending(true);
     try {
-      const reply = await this.api.chat(session.session_id, { text, selected, part_id: currentPart(state)?.id ?? null });
+      const reply = await this.watching(session.session_id, () => this.api.chat(session.session_id, { text, selected, part_id: currentPart(state)?.id ?? null }));
       if (!this.isCurrent(runId)) return [];
       mustFit(checkChatReply(reply), "an answer");
       const { statements, point_to, plan } = reply as ChatReply;
@@ -175,7 +185,8 @@ export class LiveSessions {
       if (stuckAtStart || needs === "part") {
         await this.fetchPart(runId);
       } else {
-        const summary = await this.api.finishSession(state.session.session_id);
+        const sessionId = state.session.session_id;
+        const summary = await this.watching(sessionId, () => this.api.finishSession(sessionId));
         mustFit(checkSummary(summary), "a summary");
         if (this.isCurrent(runId)) this.player.setSummary(summary as Summary);
       }
@@ -187,6 +198,29 @@ export class LiveSessions {
     }
   }
 
+  /**
+   * Do some work against the backend, asking every second meanwhile what the tutor
+   * is doing so the student can see it. `key` is the session id, or the key sent
+   * when starting. What it reports is cleared when the work is done.
+   */
+  private async watching<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const getProgress = this.api.getProgress;
+    if (!getProgress) return work();
+    let done = false;
+    const ask = () =>
+      void getProgress(key).then((working) => {
+        if (!done) this.player.setWorking(working);
+      });
+    const timer = setInterval(ask, PROGRESS_EVERY_MS);
+    try {
+      return await work();
+    } finally {
+      done = true;
+      clearInterval(timer);
+      this.player.setWorking([]);
+    }
+  }
+
   /** True while the play-through a request was made for is still the one on screen. */
   private isCurrent(runId: string | null): boolean {
     return this.player.getState().runId === runId;
@@ -195,7 +229,7 @@ export class LiveSessions {
   private async fetchPart(runId: string | null): Promise<void> {
     const sessionId = this.player.getState().session?.session_id;
     if (!sessionId) return;
-    const reply = (await this.api.nextPart(sessionId)) as { part?: unknown; plan?: unknown } | null;
+    const reply = (await this.watching(sessionId, () => this.api.nextPart(sessionId))) as { part?: unknown; plan?: unknown } | null;
     // The student may have opened another session while this was on its way.
     if (!this.isCurrent(runId)) return;
     if (reply?.part == null) throw new Error("The backend has no more parts for this session.");

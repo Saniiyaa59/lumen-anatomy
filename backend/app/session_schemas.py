@@ -342,6 +342,9 @@ class NotesUpload(_Model):
 class StartRequest(_Model):
     request: str = ""  # what the student asked; empty to just explore the model
     notes: NotesUpload | None = None
+    # Any string the browser makes up, to ask GET /api/sessions/progress/{key} what the tutor
+    # is doing before the session (and its id) exists. Optional.
+    progress_key: str | None = Field(default=None, max_length=100)
 
 
 class ClickAnswer(_Model):
@@ -400,6 +403,19 @@ class Timing(_Model):
     output_tokens: int  # thinking included
     input_tokens: int
     cached_share: float  # of the input, the share read from the cache
+
+
+class Working(_Model):
+    """One piece of work the tutor has under way."""
+
+    stage: str  # as in Timing.stage
+    doing: str  # for the student, e.g. "Building “Name the artery”"
+    detail: str | None  # the latest step, e.g. "Reading the atlas page on Ventricle (heart)"
+    seconds: float  # since it began
+
+
+class ProgressReply(_Model):
+    working: list[Working]  # empty when nothing is under way, or the key is not known (yet)
 
 
 class SessionState(_Model):

@@ -4,7 +4,7 @@ import { Centerlines, centerlines, type CenterlinesFile, type Piece, type Point 
 import type { ClickPlace } from "../selection/store.ts";
 import { parseSession, type ClickCase, type MultipleChoice } from "./format.ts";
 import { grade, inTarget } from "./grade.ts";
-import { caseIsOpen, currentPart, namesHidden, PlayerStore, questionIsOpen, quizIsOpen } from "./player.ts";
+import { caseIsOpen, currentPart, namesHidden, outOfPicks, PlayerStore, questionIsOpen, quizIsOpen } from "./player.ts";
 import { pulseRoute, pulseStretches } from "./pulse.ts";
 
 const session = parseSession(sample);
@@ -321,5 +321,21 @@ describe("PlayerStore", () => {
     const words = { ...theQuestion, id: "plain", highlight: [] };
     plain.start({ ...session, parts: [words], plan: [{ part_id: "plain", title: words.title, kind: "multiple_choice" }] });
     expect(questionIsOpen(plain.getState()) && !namesHidden(plain.getState())).toBe(true);
+  });
+
+  it("shows a question's answer after two wrong picks, so the options can't all be guessed through", () => {
+    const store = play();
+    store.goTo(questionIndex);
+    store.pick(1);
+    expect(questionIsOpen(store.getState())).toBe(true);
+    store.pick(2);
+    expect(store.getState().outcomes[theQuestion.id]).toMatchObject({ correct: false, revealed: true, picks: [1, 2], statement: theQuestion.options[0].feedback });
+    expect(quizIsOpen(store.getState())).toBe(false);
+    expect(store.pick(0)).toBe(false);
+    expect(store.getState().answers.map((answer) => answer.correct)).toEqual([false, false]);
+  });
+
+  it("shows the answer as soon as a wrong pick leaves only one option", () => {
+    expect([outOfPicks(1, 4), outOfPicks(2, 4), outOfPicks(1, 2), outOfPicks(1, 3)]).toEqual([false, true, true, false]);
   });
 });

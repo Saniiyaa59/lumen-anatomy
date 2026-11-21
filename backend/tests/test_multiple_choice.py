@@ -154,11 +154,18 @@ def test_a_session_takes_picks_as_answers_checks_them_and_keeps_them_across_a_re
     assert [(a["choice"], a["correct"]) for a in answers] == [(1, False), (0, True)]
 
 
+QUESTION_THEN_DEMO = {**PLAN, "parts": [*PLAN["parts"], {"title": "Where the septal branches leave", "kind": "demonstration", "intent": "Show the first one."}]}
+
+
 def test_after_a_wrong_pick_the_extra_part_is_decided_and_built_before_next_is_pressed(scripted_sessions):
     extra = {"title": "Where the right coronary artery runs again", "kind": "demonstration", "intent": "Show its course once more."}
     llm = scripted_sessions(
-        submit_plan=[reply(call("submit_plan", **PLAN))],
-        submit_demonstration=[reply(call("submit_demonstration", **demo_draft())), reply(call("submit_demonstration", **demo_draft(extra["title"])))],
+        submit_plan=[reply(call("submit_plan", **QUESTION_THEN_DEMO))],
+        submit_demonstration=[
+            reply(call("submit_demonstration", **demo_draft())),
+            reply(call("submit_demonstration", **demo_draft("Where the septal branches leave"))),
+            reply(call("submit_demonstration", **demo_draft(extra["title"]))),
+        ],
         submit_multiple_choice=[reply(call("submit_multiple_choice", **choice_draft()))],
         decide_next=[reply(call("decide_next", action="insert", reason="Mixed it up with the LAD.", part=extra))],
     )
@@ -178,7 +185,7 @@ def test_after_a_wrong_pick_the_extra_part_is_decided_and_built_before_next_is_p
     asked_before_next = len(llm.asked)
 
     added = client.post(f"/api/sessions/{session_id}/next").json()
-    assert added["part"]["title"] == extra["title"] and added["plan"][-1]["title"] == extra["title"]
+    assert added["part"]["title"] == extra["title"] and added["plan"][2]["title"] == extra["title"]
     assert len(llm.asked) == asked_before_next  # Next needed no request to Claude
 
 
@@ -234,3 +241,21 @@ def test_the_plan_tools_say_how_many_parts_a_plan_may_have():
     new_plan = ANSWER_STUDENT_TOOL["input_schema"]["properties"]["new_plan"]
     parts = SUBMIT_PLAN_TOOL["input_schema"]["properties"]["parts"]
     assert (new_plan["minItems"], new_plan["maxItems"], parts["minItems"], parts["maxItems"]) == (1, 5, 2, 5)
+
+
+def test_two_wrong_picks_count_as_done_so_the_decision_starts_then():
+    question, _ = build(choice_draft())
+    agent, _ = agent_with(decide_next=[reply(call("decide_next", action="continue", reason="Guessed."))])
+    tutor = sessions.AgentTutor(agent, Brief(request="x", plan=[NAME_IT, DEMO_ITEM], built=[question]))
+    tutor.answered(picks(1))
+    assert tutor.deciding == {}  # one wrong pick: still open
+    tutor.answered(picks(1, 2))
+    assert tutor.deciding[question.id].result() is None  # the browser shows the answer now, so the decision has started
+
+
+def test_nothing_is_decided_after_the_plans_last_part_since_the_summary_comes_next():
+    question, _ = build(choice_draft())
+    agent, llm = agent_with()  # no decide_next reply scripted: asking would fail the test
+    tutor = sessions.AgentTutor(agent, Brief(request="x", plan=[NAME_IT], built=[question]))
+    tutor.answered(picks(1, 0))
+    assert tutor.deciding == {} and llm.asked == []

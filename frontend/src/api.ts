@@ -65,8 +65,29 @@ export interface NotesUpload {
 // Study sessions; see docs/session_format.md. Replies are returned unchecked:
 // the caller checks them against the format and the loaded model.
 
-export function startSession(request: string, notes: NotesUpload | null): Promise<unknown> {
-  return post('/api/sessions', { request, notes })
+/** `progressKey` is any string the browser makes up, to ask with getProgress what the tutor is doing before the session has an id. */
+export function startSession(request: string, notes: NotesUpload | null, progressKey?: string): Promise<unknown> {
+  return post('/api/sessions', { request, notes, ...(progressKey ? { progress_key: progressKey } : {}) })
+}
+
+/** One piece of work the tutor has under way, for the student to read while they wait. */
+export interface Working {
+  stage: string
+  doing: string
+  detail: string | null
+  seconds: number
+}
+
+/** What the tutor is doing now, by session id or by the key sent when starting. Nothing on any failure: it is only a nicety. */
+export async function getProgress(key: string): Promise<Working[]> {
+  try {
+    const response = await fetch(`${API_BASE}/api/sessions/progress/${encodeURIComponent(key)}`)
+    if (!response.ok) return []
+    const reply = (await response.json()) as { working?: Working[] }
+    return Array.isArray(reply.working) ? reply.working : []
+  } catch {
+    return []
+  }
 }
 
 export function replyToTutor(sessionId: string, text: string): Promise<unknown> {

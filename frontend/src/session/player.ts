@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { Working } from "../api.ts";
 import type { ClickPlace } from "../selection/store.ts";
 import type { Answer, ChoiceAnswer, ClickAnswer, Part, PlanItem, Question, SessionInPlay, Statement, Summary } from "./format.ts";
 import { grade, type Clicked } from "./grade.ts";
@@ -72,6 +73,8 @@ export interface PlayerState {
   readonly answers: readonly Answer[];
   /** What the student and the tutor said during the session, oldest first. */
   readonly messages: readonly SessionMessage[];
+  /** While waiting for the backend, what the tutor is doing, as it last reported. Empty otherwise. */
+  readonly working: readonly Working[];
 }
 
 export const IDLE: PlayerState = {
@@ -88,6 +91,7 @@ export const IDLE: PlayerState = {
   outcomes: {},
   answers: [],
   messages: [],
+  working: [],
 };
 
 /**
@@ -112,6 +116,19 @@ export function caseIsOpen(state: PlayerState): boolean {
   if (part?.kind !== "click_case") return false;
   const outcome = state.outcomes[part.id];
   return !outcome?.correct && !outcome?.revealed;
+}
+
+/**
+ * Wrong picks on a multiple-choice question before its answer is shown. Without
+ * a limit a student can guess through every option and learn little from it. The
+ * answer is also shown once a wrong pick leaves only one option. The backend
+ * counts the same way (MAX_WRONG_PICKS in backend/app/sessions.py).
+ */
+export const MAX_WRONG_PICKS = 2;
+
+/** True when this many picks on a question with this many options means its answer should now be shown. */
+export function outOfPicks(wrong: number, options: number): boolean {
+  return wrong >= MAX_WRONG_PICKS || options - wrong <= 1;
 }
 
 /** True while a multiple-choice question is waiting for a pick: not yet answered correctly, and the answer not shown. */
@@ -199,7 +216,14 @@ export class PlayerStore {
   }
 
   setPending(pending: boolean): void {
-    if (pending !== this.state.pending) this.update({ ...this.state, pending });
+    // What the tutor was doing is stale once nothing is being waited for.
+    if (pending !== this.state.pending) this.update({ ...this.state, pending, working: pending ? this.state.working : [] });
+  }
+
+  /** What the tutor is doing, as the backend last reported it while the student waits. */
+  setWorking(working: readonly Working[]): void {
+    if (working.length === 0 && this.state.working.length === 0) return;
+    this.update({ ...this.state, working });
   }
 
   setError(error: string | null): void {
@@ -298,13 +322,16 @@ export class PlayerStore {
     if (!option || before?.picks?.includes(choice)) return false;
     const attempts = (before?.attempts ?? 0) + 1;
     const answer: ChoiceAnswer = { part_id: part.id, attempt: attempts, choice, correct: option.correct, seconds: this.now() - this.shownAt };
+    const picks = [...(before?.picks ?? []), choice];
+    // Too many wrong picks: show the answer, with the right option's feedback.
+    const revealed = !option.correct && outOfPicks(picks.length, part.options.length);
     const outcome: CaseOutcome = {
       attempts,
       correct: option.correct,
-      revealed: false,
-      statement: option.feedback,
+      revealed,
+      statement: revealed ? part.options.find((candidate) => candidate.correct)!.feedback : option.feedback,
       lastClick: null,
-      picks: [...(before?.picks ?? []), choice],
+      picks,
     };
     this.update({
       ...this.state,

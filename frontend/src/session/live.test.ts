@@ -75,7 +75,7 @@ describe("LiveSessions", () => {
     const { api, player, live } = fakeBackend();
     await live.start("Prepare me on coronary dominance", null);
     const state = player.getState();
-    expect(api.startSession).toHaveBeenCalledWith("Prepare me on coronary dominance", null);
+    expect(api.startSession).toHaveBeenCalledWith("Prepare me on coronary dominance", null, expect.any(String));
     expect(state).toMatchObject({ live: true, pending: false, error: null, index: 0 });
     expect(state.session?.request).toBe("Prepare me on coronary dominance");
     expect(state.session?.plan).toHaveLength(TOTAL);
@@ -396,5 +396,28 @@ describe("exploring with no plan", () => {
     player.pick(1);
     expect(api.sendAnswer).toHaveBeenCalledTimes(1);
     expect(api.sendAnswer.mock.calls[0][1]).toMatchObject({ choice: 1, attempt: 1, correct: false });
+  });
+
+  it("asks what the tutor is doing while it waits, shows it, and clears it when the part arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      let release: (value: unknown) => void = () => undefined;
+      const { api, player } = fakeBackend();
+      const working = [{ stage: "part p2", doing: "Building “p2”", detail: "Choosing a view", seconds: 3 }];
+      const getProgress = vi.fn(async () => working);
+      const watched = new LiveSessions(player, { ...api, getProgress });
+      await watched.start("Prepare me", null);
+      expect(getProgress).not.toHaveBeenCalled(); // the fake backend answers at once
+      api.nextPart.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+      const advancing = watched.advance();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(getProgress).toHaveBeenCalledWith("s1");
+      expect(player.getState().working).toEqual(working);
+      release({ part: structuredClone(sample.parts[1]), plan: sample.plan, done: false });
+      await advancing;
+      expect(player.getState().working).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

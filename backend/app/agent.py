@@ -25,6 +25,7 @@ from app import measure, notes
 from app.agent_tools import ANSWER_STUDENT_TOOL, ASK_STUDENT_TOOL, DECIDE_TOOL, LOOKUP_TOOLS, MUST_SEE, SUBMIT_PART_TOOLS, SUBMIT_PLAN_TOOL, SUBMIT_SUMMARY_TOOL, run_lookup
 from app.articles import Articles
 from app.llm import LLM, Usage
+from app.progress import Progress, describe_lookup
 from app.region import Region
 from app.session_check import check_part
 from app.session_schemas import ChoiceAnswer, ClickAnswer, ClickCase, DamageSlider, Demonstration, MultipleChoice, Part, PartKind, Pulse, Scope, Source, Statement, StudentAnswer
@@ -191,6 +192,7 @@ class Agent:
         self.region = region
         self.articles = articles
         self.usage = usage or Usage()
+        self.progress = Progress()  # what it is doing now, for the student to read while they wait
         listing = [f"{group.id} | {group.name} | group | {group.parent or '-'}" for group in region.groups.values()]
         listing += [f"{s.id} | {s.name} | {s.kind} | {s.parent or '-'}" for s in region.structures.values()]
         self.system = SYSTEM.format(region_name=region.name.lower(), structure_list="\n".join(listing))
@@ -242,14 +244,32 @@ class Agent:
         also: Sequence[tuple[dict[str, Any], Callable[[dict], Any]]] = (),
         stage: str | None = None,
         brief: "Brief | None" = None,
+        doing: str | None = None,
     ) -> Any:
         """Let Claude work on a task with the lookup tools until what it hands in is accepted.
 
         `also` offers other ways to finish, each with its own check. The main hand-in
         stays last in the tool list. `stage` names the task in the timings (the
         hand-in tool's name if not given). `brief` gives the lookups the student's notes.
+        `doing` says what the work is, for the student while they wait (see app/progress.py).
         """
         stage = stage or hand_in["name"]
+        self.progress.begin(stage, doing or "Thinking")
+        try:
+            return self._work_on(task, hand_in, accept, also, stage, brief)
+        finally:
+            self.progress.end(stage)
+
+    def _work_on(
+        self,
+        task: str,
+        hand_in: dict[str, Any],
+        accept: Callable[[dict], Any],
+        also: Sequence[tuple[dict[str, Any], Callable[[dict], Any]]],
+        stage: str,
+        brief: "Brief | None",
+    ) -> Any:
+        """The loop behind _work: ask, run lookups, check hand-ins, until one is accepted."""
         accepts = {hand_in["name"]: accept, **{tool["name"]: check for tool, check in also}}
         tools = [*LOOKUP_TOOLS, *(tool for tool, _ in also), hand_in]
         finish = " or ".join(accepts)
@@ -280,18 +300,21 @@ class Agent:
                 failed = False
                 if call.name in accepts:
                     hand_ins += 1
+                    self.progress.step(stage, "Checking it against the model and the sources")
                     try:
                         accepted = accepts[call.name](call.input)
                     except _Rejected as rejected:
                         problems = rejected.problems
                         content = "Not accepted. Fix these and hand it in again:\n- " + "\n- ".join(problems)
                         failed = True
+                        self.progress.step(stage, "Fixing something the checks found")
                     else:
                         self._timed(stage, response, claude, time.monotonic() - handled, f"{call.name} accepted")
                         done("accepted", turn)
                         return accepted
                 else:
                     lookups.append(call.name)
+                    self.progress.step(stage, describe_lookup(call.name, call.input, self.region, self.articles))
                     try:
                         content = run_lookup(call.name, call.input, self.region, self.articles, brief.pages if brief else [])
                     except (ValueError, TypeError) as error:
@@ -338,6 +361,13 @@ class Agent:
 
     def read_notes(self, request: str, pdf_base64: str, filename: str) -> list[NoteFact]:
         """Have Claude pull the relevant facts out of the notes. The API attaches the page and the exact text each fact rests on."""
+        self.progress.begin("notes", "Reading your notes")
+        try:
+            return self._read_notes(request, pdf_base64, filename)
+        finally:
+            self.progress.end("notes")
+
+    def _read_notes(self, request: str, pdf_base64: str, filename: str) -> list[NoteFact]:
         response, claude = self._ask(
             [
                 {
@@ -438,7 +468,7 @@ class Agent:
             return self._accept_answer(brief, {**raw, "new_plan": None})
 
         also = [(ASK_STUDENT_TOOL, accept_question)] if may_ask else []
-        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)], stage="plan", brief=brief)
+        return self._work(task, SUBMIT_PLAN_TOOL, accept, also=[*also, (ANSWER_STUDENT_TOOL, accept_answer)], stage="plan", brief=brief, doing="Planning your session")
 
     # Building a part
 
@@ -449,7 +479,7 @@ class Agent:
             f'Build this part now: [{item.kind}] "{item.title}". What it should teach: {item.intent}\n\n'
             f"Look up what you need, making all the lookups you already know you need in the same turn, then hand it in with {SUBMIT_PART_TOOLS[item.kind]['name']}. Leave view.side out: the code chooses the view."
         )
-        return self._work(task, SUBMIT_PART_TOOLS[item.kind], lambda raw: self._accept_part(brief, item, raw), stage=f"part {item.part_id}", brief=brief)
+        return self._work(task, SUBMIT_PART_TOOLS[item.kind], lambda raw: self._accept_part(brief, item, raw), stage=f"part {item.part_id}", brief=brief, doing=f"Building “{item.title}”")
 
     def _source(self, brief: Brief, evidence: Any, path: str, problems: list[str]) -> dict | None:
         """Turn the agent's evidence for a statement into a session source, or record why it is not good enough."""
@@ -627,7 +657,7 @@ class Agent:
             "give new_plan: it replaces every part they have not been given yet. Otherwise leave the plan alone. "
             "If there is no plan yet, they are exploring the model: give new_plan only when they ask to be taught, prepared or quizzed."
         )
-        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw), stage="chat", brief=brief)
+        return self._work(task, ANSWER_STUDENT_TOOL, lambda raw: self._accept_answer(brief, raw), stage="chat", brief=brief, doing="Answering you")
 
     def _accept_answer(self, brief: Brief, raw: dict) -> ChatAnswer:
         """Check an answer to the student: its statements' sources, what it points to, and any new plan."""
@@ -700,7 +730,7 @@ class Agent:
             part_id = next(c for c in (f"{EXTRA_PREFIX}{n}-{_slug(title)}" for n in range(1, 99)) if c not in taken)
             return PlannedPart(part_id, title, extra["kind"], f"{str(extra.get('intent', '')).strip()} (Added because: {str(raw.get('reason', '')).strip()})")
 
-        return self._work(task, DECIDE_TOOL, accept, stage=f"decide after {case.id}", brief=brief)
+        return self._work(task, DECIDE_TOOL, accept, stage=f"decide after {case.id}", brief=brief, doing="Deciding what to do about your answers")
 
     # Closing
 
@@ -727,7 +757,7 @@ class Agent:
                 raise _Rejected(["give at least one phrase in solid or shaky"])
             return solid, shaky
 
-        return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary", brief=brief)
+        return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary", brief=brief, doing="Writing your summary")
 
 
 def _gives_away(question: MultipleChoice) -> list[str]:

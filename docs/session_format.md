@@ -72,6 +72,7 @@ For a `multiple_choice`:
 
 - Exactly one option has `correct: true`, and no two options have the same text.
 - `feedback` is a Statement: why that answer is right or wrong. It is shown once the student picks it.
+- After two wrong picks, or once a wrong pick leaves only one option, the browser shows the answer. The backend counts the same way, so it can decide what comes next straight away.
 - With `highlight`, the question is about what is marked ("Which artery is highlighted?"). This is how the student is asked to name a structure, so the viewer hides names on the model, labels and hover alike, until they have answered, as it does during a case. Without `highlight` the question is about something the model can't show, and the view is only a backdrop; its `side` may be `null`.
 - `story`, like a case's, is an invented patient and has no source.
 
@@ -150,13 +151,14 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 
 | Request | Body | Reply |
 | --- | --- | --- |
-| `POST /api/sessions` | `request` (what the student asked for) and `notes`: `null`, or `{filename, data}` with the PDF base64-encoded | The start fields |
+| `POST /api/sessions` | `request` (what the student asked for), `notes`: `null`, or `{filename, data}` with the PDF base64-encoded, and optionally `progress_key`: any string the browser makes up, to ask about progress before the session has an id | The start fields |
 | `POST /api/sessions/{id}/reply` | `text`: the student's answer to the tutor's question | The start fields, or another question. A 409 if the tutor isn't waiting for an answer |
 | `POST /api/sessions/{id}/chat` | `text`; `selected`: structure ids selected on the model; `part_id`: the part on screen, or `null` | `{statements, point_to, plan, plan_changed}`: the tutor's answer as sourced Statements, structure ids for the browser to select, and the current plan. A 409 before the plan, or from the sample |
 | `POST /api/sessions/{id}/next` | None | `{part, plan, done}`: the next part and the current plan, or `part: null` with `done: true` when there are no more |
 | `POST /api/sessions/{id}/answers` | An answer, as above: a click or a pick | `{plan}`: the current plan, which the agent may have changed |
 | `POST /api/sessions/{id}/finish` | None | The summary |
 | `GET /api/sessions/{id}` | None | What the backend holds: the request, where its parts come from, the notes' file name and size, how many parts were sent, every answer, any parts the agent gave up on, how many requests and tokens the session has used, and `timings`: for each recent request to Claude, its task, how long Claude took, how long the backend's own work on the reply took, and what came of it (lookups, a hand-in accepted or rejected). For checking, not for the student |
+| `GET /api/sessions/progress/{key}` | None | `{working}`: what the tutor is doing now, each `{stage, doing, detail, seconds}`, e.g. doing "Building “Name the artery”" and detail "Reading the atlas page on Ventricle (heart)". `key` is a session id, or the `progress_key` of a start still running. Empty when nothing is under way or the key is unknown. The browser asks every second while it waits |
 | `GET /api/tutor` | None | `{source}`: `sample` or `agent`, so the app can tell the student what to expect |
 
 - `next` gets a 409 while the tutor is waiting for an answer to its question.
@@ -165,7 +167,7 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 - `finish` keeps the summary: asking again returns it without calling Claude.
 - When the agent or the Claude API fails, the reply is a 502 with the reason in words. The browser shows it and offers to try again.
 - Notes must be a PDF of at most 20 MB; anything else gets a 422 or a 413.
-- An answer must be for a case or question the session has already been sent, and a pick must name one of the question's options, or it gets a 422. After a case or question with a wrong answer, the agent may add one part before the rest: never after a part it added itself, and at most two in a session. It decides as soon as the right answer arrives, and builds that part straight away, so it is ready when the student asks for the next part; if the answer was shown or skipped instead, it decides when `next` is called.
+- An answer must be for a case or question the session has already been sent, and a pick must name one of the question's options, or it gets a 422. After a case or question with a wrong answer, the agent may add one part before the rest: never after a part it added itself, never after the plan's last part (the summary comes next), and at most two in a session. It decides as soon as the right answer arrives, and builds that part straight away, so it is ready when the student asks for the next part; if the answer was shown or skipped instead, it decides when `next` is called.
 - The backend's models (`backend/app/session_schemas.py`) check shape. `backend/app/session_check.py` checks that every id, piece and distance exists on the model, as the browser does, and also that each atlas source names a real article with its own link, which the browser cannot do. The agent runs it on every part it builds, before the part can be sent.
 
 The notes travel as base64 inside JSON, not as a file upload, so the backend needs no extra package and the body is already in the form the Claude API takes a PDF in.
