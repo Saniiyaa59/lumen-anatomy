@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import sample from "../../../assets/fixtures/sessions/coronary_arteries.json";
 import { Centerlines, centerlines, type CenterlinesFile, type Piece, type Point } from "../centerlines.ts";
 import type { ClickPlace } from "../selection/store.ts";
-import { parseSession, type ClickCase } from "./format.ts";
+import { parseSession, type ClickCase, type MultipleChoice } from "./format.ts";
 import { grade, inTarget } from "./grade.ts";
-import { caseIsOpen, currentPart, PlayerStore } from "./player.ts";
+import { caseIsOpen, currentPart, namesHidden, PlayerStore, questionIsOpen, quizIsOpen } from "./player.ts";
 import { pulseRoute, pulseStretches } from "./pulse.ts";
 
 const session = parseSession(sample);
 const theCase = session.parts.find((part): part is ClickCase => part.kind === "click_case")!;
+const theQuestion = session.parts.find((part): part is MultipleChoice => part.kind === "multiple_choice")!;
 const LAD = "anterior_interventricular_artery";
 
 /** A click on a vessel, in the shape the viewer produces. */
@@ -266,5 +267,59 @@ describe("PlayerStore", () => {
     expect(later.getState()).toBe(saved);
     expect(currentPart(later.getState())?.id).toBe(theCase.id);
     expect(caseIsOpen(later.getState())).toBe(false);
+  });
+
+  const questionIndex = session.parts.indexOf(theQuestion);
+
+  it("records a wrong pick, then the right one, in the shape sent to the backend", () => {
+    const store = play();
+    store.goTo(questionIndex);
+    expect(questionIsOpen(store.getState()) && quizIsOpen(store.getState())).toBe(true);
+
+    expect(store.pick(1)).toBe(true);
+    expect(store.getState().outcomes[theQuestion.id]).toMatchObject({ attempts: 1, correct: false, picks: [1], statement: theQuestion.options[1].feedback });
+    expect(store.pick(1)).toBe(false); // already picked
+    expect(store.pick(9)).toBe(false); // no such option
+
+    expect(store.pick(0)).toBe(true);
+    expect(store.getState().outcomes[theQuestion.id]).toMatchObject({ attempts: 2, correct: true, picks: [1, 0] });
+    expect(questionIsOpen(store.getState())).toBe(false);
+    expect(store.pick(2)).toBe(false); // answered: no more picks
+    expect(store.getState().answers).toEqual([
+      { part_id: theQuestion.id, attempt: 1, choice: 1, correct: false, seconds: 1 },
+      { part_id: theQuestion.id, attempt: 2, choice: 0, correct: true, seconds: 2 },
+    ]);
+  });
+
+  it("shows a question's answer on request, with the right option's feedback", () => {
+    const store = play();
+    store.goTo(questionIndex);
+    store.pick(2);
+    store.reveal();
+    expect(store.getState().outcomes[theQuestion.id]).toMatchObject({ correct: false, revealed: true, picks: [2], statement: theQuestion.options[0].feedback });
+    expect(quizIsOpen(store.getState())).toBe(false);
+  });
+
+  it("ignores picks unless a question is on screen, and clicks while one is", () => {
+    const store = play();
+    expect(store.pick(0)).toBe(false);
+    store.goTo(questionIndex);
+    expect(store.answer(LAD, clickOn(LAD, `${LAD}.0`, 0.02))).toBe(false);
+  });
+
+  it("hides names while a case is open or a question asks about what is highlighted, and not after", () => {
+    const store = play();
+    expect(namesHidden(store.getState())).toBe(false);
+    store.goTo(caseIndex);
+    expect(namesHidden(store.getState())).toBe(true);
+    store.goTo(questionIndex);
+    expect(namesHidden(store.getState())).toBe(true);
+    store.pick(0);
+    expect(namesHidden(store.getState())).toBe(false);
+
+    const plain = new PlayerStore(() => 0);
+    const words = { ...theQuestion, id: "plain", highlight: [] };
+    plain.start({ ...session, parts: [words], plan: [{ part_id: "plain", title: words.title, kind: "multiple_choice" }] });
+    expect(questionIsOpen(plain.getState()) && !namesHidden(plain.getState())).toBe(true);
   });
 });

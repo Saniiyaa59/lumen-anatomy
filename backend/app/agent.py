@@ -27,7 +27,7 @@ from app.articles import Articles
 from app.llm import LLM, Usage
 from app.region import Region
 from app.session_check import check_part
-from app.session_schemas import ClickAnswer, ClickCase, DamageSlider, Demonstration, Part, PartKind, Pulse, Scope, Source, Statement
+from app.session_schemas import ChoiceAnswer, ClickAnswer, ClickCase, DamageSlider, Demonstration, MultipleChoice, Part, PartKind, Pulse, Scope, Source, Statement, StudentAnswer
 
 # Shown in the terminal the backend runs in, next to uvicorn's own lines.
 log = logging.getLogger("uvicorn.error")
@@ -36,6 +36,7 @@ MAX_TURNS = 24  # requests to Claude for one piece of work, lookups included
 MAX_HAND_INS = 4  # times one part may be handed in before it is given up on
 MAX_NOTE_FACTS = 40
 MAX_QUESTIONS = 2  # questions the tutor may ask before it must plan
+EXTRA_PREFIX = "extra"  # starts the id of a part the agent added after a wrong answer
 MIN_QUOTE_CHARS = 20
 CLICK_TOLERANCE = 0.002  # metres past the end of an answer region that still count
 
@@ -44,12 +45,13 @@ PART_ADAPTER: TypeAdapter[Part] = TypeAdapter(Part)
 
 SYSTEM = """You are the tutor inside Lumen, a study tool built on a 3D anatomy model. A student says what they need to be ready for. You build a short study session that plays on the model of the {region_name}, one part at a time.
 
-# The four kinds of part
+# The five kinds of part
 
 - demonstration: the camera frames some structures, hides what is in the way and tints the ones being discussed, beside a line or two of explanation.
 - pulse: a pulse runs along a vessel from one place to another, or spreads into every branch beyond a place, to show a course and its branching.
 - damage_slider: the student drags a blockage along one piece of a vessel; everything beyond it greys out. Text can change as the blockage enters different zones.
 - click_case: a short story about an invented patient, then "click where the problem is". The student answers by clicking the model and is graded by the exact place.
+- multiple_choice: a question, optionally after a short patient story, with two to five answers to pick from. To have the student name something, highlight it and ask what it is. Without a highlight it quizzes what the model can't show, such as which wall an artery feeds or where the artery to a node comes from.
 
 The student's request decides what a session covers; the model only decides how it can be shown. Where the topic allows, build around reasoning rather than naming: what follows if this is blocked here, and where must the problem be given these findings.
 
@@ -71,6 +73,7 @@ What this model cannot show: which part of an organ's wall a vessel supplies (th
    A statement says only what its source says. Don't add to it what the session will do next, what a later part covers, or a fact from somewhere else: give a further fact its own statement and source, and leave remarks about the session out, since every statement must have a source.
 3. The student must be able to see what a part is about when it opens. The code sees to this: leave `view.side` out, put in `view.look_at` what the camera should frame, and the code picks the side and adds what is in front to `hide`. It never hides the part's subject, and hides what you frame only when it must. Don't mention the side in what you write unless you chose it with `find_view`. Give a side yourself only to insist on it; if too little shows from there, the code picks another.
 4. A click case needs exactly one right place. Give findings that only that place explains, and check with `beyond` that they match what the model shows. Add near misses for the wrong clicks a student is likely to make, each with its own short explanation. A near miss may not overlap the answer.
+5. A multiple-choice question has exactly one right answer, and neither the question nor the story may contain its words. The wrong answers are things a student could believe: the same kind of thing as the right one (all arteries, say), never silly. Each answer's feedback says why it is right or wrong and has a source like any statement.
 
 # Writing
 
@@ -401,6 +404,7 @@ class Agent:
             f"{self._background(brief)}\n\n{deciding}"
             "Plan two to five parts that build on each other, chosen for this request: what someone revising this topic most needs. "
             "Pick the kinds that suit the topic. A damage_slider or click_case fits where a blockage teaches something; for other topics, demonstrations and pulses may be all you need. "
+            "A multiple_choice question tests what can only be explained in words, or asks the student to name a highlighted structure. "
             "Look at the structures you intend to use with `describe` and `branches_of` first, so the plan fits what the model has. "
             "Hand the plan in with submit_plan."
         )
@@ -505,8 +509,14 @@ class Agent:
         draft.setdefault("statements", [])  # a case tells its story in its own fields
         if isinstance(draft.get("view"), dict):
             draft["view"].setdefault("side", None)  # left out: the code chooses it below
+            draft["view"]["look_at"] = self._ungroup(draft["view"].get("look_at"))
+        if "highlight" in draft:
+            draft["highlight"] = self._ungroup(draft["highlight"])
         if item.kind == "click_case" and isinstance(draft.get("answer"), dict):
             draft["answer"]["tolerance"] = CLICK_TOLERANCE
+        if item.kind == "multiple_choice":
+            draft.setdefault("highlight", [])
+            draft.setdefault("story", None)
         try:
             part = PART_ADAPTER.validate_python(draft)
         except ValidationError as error:
@@ -522,12 +532,28 @@ class Agent:
                 for structure_id in part.answer.structures
                 if structure_id in vessels
             ]
+        if isinstance(part, MultipleChoice):
+            problems += _gives_away(part)
         if not problems:
             part, seeing = self._settle_view(part)
             problems += seeing
         if problems:
             raise _Rejected(problems)
         return part
+
+    def _ungroup(self, ids: Any) -> Any:
+        """A list of ids with each group replaced by the structures in it, which is what framing or tinting a group means.
+
+        Anything else, including an id that is neither, is left for the checks to report.
+        """
+        if not isinstance(ids, list):
+            return ids
+        found: list[Any] = []
+        for entry in ids:
+            for item in self.region.structures_under(entry) if isinstance(entry, str) and entry in self.region.groups else [entry]:
+                if item not in found:
+                    found.append(item)
+        return found
 
     def _settle_view(self, part: Part) -> tuple[Part, list[str]]:
         """Make sure the student can see what this part is about when it opens.
@@ -553,8 +579,8 @@ class Agent:
                 stretches = measure.beyond(self.region, part.start.piece, part.start.at).stretches
             stretches = [s for s in stretches if s.to > s.start]
             what = "the pulse's route"
-        elif isinstance(part, Demonstration):
-            structures = list(part.highlight)
+        elif isinstance(part, (Demonstration, MultipleChoice)):
+            structures = list(part.highlight)  # a question with nothing highlighted needs no particular view
             what = "the highlighted structures"
         if not stretches and not structures:
             return part, []
@@ -631,22 +657,35 @@ class Agent:
 
     # Replanning
 
-    def decide(self, brief: Brief, case: ClickCase, answers: list[ClickAnswer]) -> PlannedPart | None:
-        """After a case the student got wrong at least once: carry on, or put one extra part first. Returns the extra part, if any."""
-        clicks = []
+    def decide(self, brief: Brief, case: ClickCase | MultipleChoice, answers: Sequence[StudentAnswer]) -> PlannedPart | None:
+        """After a case or question the student got wrong at least once: carry on, or put one extra part first. Returns the extra part, if any."""
+        tries = []
         for answer in answers:
-            where = f"{answer.piece} at {answer.at:.4f} m" if answer.piece is not None and answer.at is not None else "not on a vessel"
-            clicks.append(f"- try {answer.attempt}: {self.region.name_of(answer.structure_id)} ({where}); {'correct' if answer.correct else 'wrong'}")
-        regions = ", ".join(f"{r.piece} from {r.start} to {r.to}" for r in case.answer.regions) or "none"
+            outcome = "correct" if answer.correct else "wrong"
+            if isinstance(answer, ChoiceAnswer):
+                picked = case.options[answer.choice].text if isinstance(case, MultipleChoice) and answer.choice < len(case.options) else f"option {answer.choice}"
+                tries.append(f"- try {answer.attempt}: picked \"{picked}\"; {outcome}")
+            else:
+                where = f"{answer.piece} at {answer.at:.4f} m" if answer.piece is not None and answer.at is not None else "not on a vessel"
+                tries.append(f"- try {answer.attempt}: {self.region.name_of(answer.structure_id)} ({where}); {outcome}")
+        if isinstance(case, MultipleChoice):
+            right = next(option.text for option in case.options if option.correct)
+            what = f'the question "{case.title}"'
+            asked = (f"Story: {case.story}\n" if case.story else "") + f"Question: {case.question}\n" + f"Answers offered: {'; '.join(option.text for option in case.options)}. Right answer: {right}.\n"
+            how = "Their picks"
+        else:
+            regions = ", ".join(f"{r.piece} from {r.start} to {r.to}" for r in case.answer.regions) or "none"
+            what = f'the case "{case.title}"'
+            asked = f"Story: {case.story}\nQuestion: {case.question}\nRight answer: regions {regions}; structures {', '.join(case.answer.structures) or 'none'}.\n"
+            how = "Their clicks"
         remaining = [item for item in brief.plan if item.part_id not in {part.id for part in brief.built}]
         task = (
             f"{self._background(brief)}\n\n"
-            f'The student has just finished the case "{case.title}".\n'
-            f"Story: {case.story}\nQuestion: {case.question}\n"
-            f"Right answer: regions {regions}; structures {', '.join(case.answer.structures) or 'none'}.\n"
-            "Their clicks:\n" + "\n".join(clicks) + "\n\n"
+            f"The student has just finished {what}.\n"
+            f"{asked}"
+            f"{how}:\n" + "\n".join(tries) + "\n\n"
             "Still to come: " + (", ".join(f"[{item.kind}] {item.title}" for item in remaining) or "nothing; the summary is next") + "\n\n"
-            "Decide what the wrong clicks say about what they have not understood. If one extra part before the rest would fix it, such as a demonstration of the point they missed or an easier case, ask for it. "
+            "Decide what the wrong answers say about what they have not understood. If one extra part before the rest would fix it, such as a demonstration of the point they missed or an easier question, ask for it. "
             "If what is still to come already covers it, or the slip was small, carry on. Answer with decide_next."
         )
 
@@ -658,19 +697,19 @@ class Agent:
                 raise _Rejected(['action must be "continue", or "insert" with a part that has a title, a kind and an intent'])
             title = str(extra["title"]).strip()
             taken = {item.part_id for item in brief.plan}
-            part_id = next(c for c in (f"extra{n}-{_slug(title)}" for n in range(1, 99)) if c not in taken)
+            part_id = next(c for c in (f"{EXTRA_PREFIX}{n}-{_slug(title)}" for n in range(1, 99)) if c not in taken)
             return PlannedPart(part_id, title, extra["kind"], f"{str(extra.get('intent', '')).strip()} (Added because: {str(raw.get('reason', '')).strip()})")
 
         return self._work(task, DECIDE_TOOL, accept, stage=f"decide after {case.id}", brief=brief)
 
     # Closing
 
-    def summarise(self, brief: Brief, answers: list[ClickAnswer]) -> tuple[list[str], list[str]]:
+    def summarise(self, brief: Brief, answers: Sequence[StudentAnswer]) -> tuple[list[str], list[str]]:
         """What was solid and what was shaky, judged from the parts given and the student's clicks."""
         results = []
         for part in brief.built:
             tries = [a for a in answers if a.part_id == part.id]
-            if isinstance(part, ClickCase):
+            if isinstance(part, (ClickCase, MultipleChoice)):
                 outcome = "not answered" if not tries else f"correct on try {tries[-1].attempt}" if tries[-1].correct else f"not solved in {len(tries)} tries"
                 results.append(f"- [{part.kind}] {part.title}: {outcome}")
             else:
@@ -691,13 +730,28 @@ class Agent:
         return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary", brief=brief)
 
 
+def _gives_away(question: MultipleChoice) -> list[str]:
+    """Problems if the question or its story contains the words of the right answer, so it answers itself."""
+    right = next(option.text for option in question.options if option.correct)
+    asked = _squash(f"{question.story or ''} {question.question}")
+    if re.search(rf"\b{re.escape(_squash(right))}\b", asked):  # whole words: "LAD" is not in "bladder"
+        return [f'part.question: the question or story says "{right}", the right answer, so it gives itself away. Describe it by findings or by where it is instead.']
+    return []
+
+
 def sources_used(parts: list[Part]) -> list[Source]:
-    """Every distinct source cited in these parts, in the order first used. Collected by code, not by the agent."""
+    """Every distinct source cited in these parts, in the order first used. Collected by code, not by the agent.
+
+    Atlas sources count as one per page linked: several atlas entries hold the same
+    Wikipedia page, and the student sees them named by that page.
+    """
     found: dict[str, Source] = {}
 
     def visit(value: Any) -> None:
         if hasattr(value, "source") and hasattr(value, "text"):
-            found.setdefault(value.source.model_dump_json(), value.source)
+            source = value.source
+            key = f"atlas page {source.url}" if source.type == "atlas" and source.url else source.model_dump_json()
+            found.setdefault(key, source)
         elif isinstance(value, list):
             for item in value:
                 visit(item)

@@ -17,7 +17,7 @@ SESSION_FORMAT = "lumen.session/0.1"
 
 Text = Annotated[str, Field(min_length=1)]
 Link = Annotated[str, Field(pattern=r"^https?://")]
-PartKind = Literal["demonstration", "pulse", "damage_slider", "click_case"]
+PartKind = Literal["demonstration", "pulse", "damage_slider", "click_case", "multiple_choice"]
 
 
 class _Model(BaseModel):
@@ -184,7 +184,40 @@ class ClickCase(_Part):
         return self
 
 
-Part = Annotated[Demonstration | Pulse | DamageSlider | ClickCase, Field(discriminator="kind")]
+class Option(_Model):
+    """One answer to a multiple-choice question, with what the student reads after picking it."""
+
+    text: Text  # short, e.g. "Right coronary artery"; it is an answer, not a claim, so it has no source
+    correct: bool
+    feedback: Statement  # why this answer is right or wrong
+
+
+class MultipleChoice(_Part):
+    """A question with a few answers to pick from, exactly one of them right.
+
+    With `highlight`, the model marks some structures and the question can be
+    about them ("What is the highlighted vessel?"). Without, it quizzes what the
+    model can't show, such as which wall an artery feeds.
+    """
+
+    kind: Literal["multiple_choice"]
+    highlight: list[Text]  # structures marked on the model; may be empty
+    story: Text | None  # an invented patient, so it has no source; null for a plain question
+    question: Text
+    options: list[Option] = Field(min_length=2, max_length=5)
+
+    @model_validator(mode="after")
+    def one_right_answer(self) -> "MultipleChoice":
+        right = sum(1 for option in self.options if option.correct)
+        if right != 1:
+            raise ValueError(f"exactly one option must be correct, not {right}")
+        texts = [option.text.strip().lower() for option in self.options]
+        if len(set(texts)) != len(texts):
+            raise ValueError("two options have the same text")
+        return self
+
+
+Part = Annotated[Demonstration | Pulse | DamageSlider | ClickCase | MultipleChoice, Field(discriminator="kind")]
 
 
 class PlanItem(_Model):
@@ -330,6 +363,19 @@ class ClickAnswer(_Model):
         return self
 
 
+class ChoiceAnswer(_Model):
+    """One pick on a multiple-choice question, already graded by the browser."""
+
+    part_id: Text
+    attempt: int = Field(ge=1)
+    choice: int = Field(ge=0)  # which option, counted from 0 in the order the part lists them
+    correct: bool
+    seconds: float = Field(ge=0)  # from the question appearing to the pick
+
+
+StudentAnswer = ClickAnswer | ChoiceAnswer  # told apart by their fields: a click has `structure_id`, a pick has `choice`
+
+
 # Replies that are not part of a recorded session.
 
 
@@ -367,7 +413,7 @@ class SessionState(_Model):
     notes_bytes: int
     parts_sent: int
     finished: bool
-    answers: list[ClickAnswer]
+    answers: list[StudentAnswer]
     dropped: list[str]  # parts the agent gave up on, with the reason
     # What the session has cost so far, when the agent built it.
     claude_calls: int

@@ -454,6 +454,45 @@ a.source:hover {
   font-weight: 600;
 }
 
+/* A multiple-choice question's answers. */
+.thread-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.thread-option {
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.thread-option:hover:not(:disabled) {
+  border-color: #8fc1ff;
+  background: rgba(143, 193, 255, 0.1);
+}
+
+.thread-option:disabled {
+  cursor: default;
+}
+
+.thread-option[data-state='wrong'] {
+  border-color: #ff5a5a;
+  color: rgba(255, 255, 255, 0.6);
+  text-decoration: line-through;
+}
+
+.thread-option[data-state='correct'] {
+  border-color: #4ade80;
+  background: rgba(74, 222, 128, 0.12);
+}
+
 .thread-feedback {
   margin-top: 12px;
   padding: 10px 12px;

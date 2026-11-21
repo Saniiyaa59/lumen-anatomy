@@ -3,17 +3,21 @@ import { Fragment, useEffect, useRef, useState, type ChangeEvent, type FormEvent
 import sampleSession from "../../../assets/fixtures/sessions/coronary_arteries.json";
 import { getTutorSource } from "../api.ts";
 import { selectionStore } from "../selection/store.ts";
-import { parseSession, type ClickCase, type DamageSlider, type Part, type Source, type Statement } from "../session/format.ts";
+import { atlasTitle, parseSession, type ClickCase, type DamageSlider, type MultipleChoice, type Part, type Source, type Statement } from "../session/format.ts";
 import { inTarget } from "../session/grade.ts";
 import { liveSessions } from "../session/live.ts";
-import { caseIsOpen, playerStore, usePlayer, type Asking, type CaseOutcome, type PlayerState, type SessionMessage } from "../session/player.ts";
+import { playerStore, quizIsOpen, usePlayer, type Asking, type CaseOutcome, type PlayerState, type SessionMessage } from "../session/player.ts";
 
 const KIND_NAMES: Record<Part["kind"], string> = {
   demonstration: "Demonstration",
   pulse: "Follow the flow",
   damage_slider: "Try it",
   click_case: "Case",
+  multiple_choice: "Question",
 };
+
+/** Parts the student answers, whose result shows in the thread and the summary. */
+const isQuiz = (part: Part): part is ClickCase | MultipleChoice => part.kind === "click_case" || part.kind === "multiple_choice";
 
 const mm = (metres: number) => `${Math.round(metres * 1000)} mm`;
 
@@ -48,11 +52,11 @@ function SourceTag({ source }: { source: Source }) {
       );
     case "atlas":
       return source.url ? (
-        <a className="source" href={source.url} target="_blank" rel="noreferrer">
-          Atlas: {source.article}
+        <a className="source" href={source.url} target="_blank" rel="noreferrer" title={`Atlas entry: ${source.article}`}>
+          Atlas: {atlasTitle(source)}
         </a>
       ) : (
-        <span className="source">Atlas: {source.article}</span>
+        <span className="source">Atlas: {atlasTitle(source)}</span>
       );
     case "web":
       return (
@@ -132,6 +136,57 @@ function CaseControls({ part, outcome }: { part: ClickCase; outcome: CaseOutcome
   );
 }
 
+/** How one option looks: not picked yet, picked and wrong, or the right one once it is known. */
+function optionState(index: number, part: MultipleChoice, outcome: CaseOutcome | undefined): "open" | "wrong" | "correct" {
+  const done = outcome?.correct || outcome?.revealed;
+  if (done && part.options[index].correct) return "correct";
+  return outcome?.picks?.includes(index) ? "wrong" : "open";
+}
+
+function ChoiceControls({ part, outcome }: { part: MultipleChoice; outcome: CaseOutcome | undefined }) {
+  const done = outcome?.correct || outcome?.revealed;
+  const verdict = outcome?.correct ? "correct" : outcome?.revealed ? "revealed" : outcome?.statement ? "wrong" : null;
+  const feedback = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    feedback.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [outcome?.attempts, verdict]);
+  return (
+    <div className="thread-task">
+      {part.story && <p className="thread-story">{part.story}</p>}
+      <p className="thread-question">{part.question}</p>
+      <div className="thread-options" role="group" aria-label="Answers">
+        {part.options.map((option, index) => {
+          const look = optionState(index, part, outcome);
+          return (
+            <button
+              type="button"
+              key={index}
+              className="thread-option"
+              data-state={look}
+              disabled={done || look !== "open"}
+              onClick={() => playerStore.pick(index)}
+            >
+              {option.text}
+            </button>
+          );
+        })}
+      </div>
+      {!done && part.highlight.length > 0 && <p className="thread-hint">Names are hidden on the model until you answer.</p>}
+      {verdict && outcome?.statement && (
+        <div className="thread-feedback" data-verdict={verdict} role="status" ref={feedback}>
+          <strong>{verdict === "correct" ? "Correct" : verdict === "revealed" ? "The answer" : "Not quite"}</strong>
+          <StatementView statement={outcome.statement} />
+        </div>
+      )}
+      {!done && (outcome?.attempts ?? 0) > 0 && (
+        <button type="button" className="thread-link" onClick={() => playerStore.reveal()}>
+          Show me the answer
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** One part of the session, as a card in the thread. Only the part on screen is open. */
 function PartCard({ part, step, state }: { part: Part; step: number; state: PlayerState }) {
   const active = step === state.index;
@@ -145,7 +200,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
       <button type="button" className="thread-card thread-card-closed" onClick={() => playerStore.goTo(step)}>
         <span className="thread-step">{step + 1}</span>
         <span className="thread-card-title">{part.title}</span>
-        {part.kind === "click_case" && <span className="thread-card-note">{caseResult(state.outcomes[part.id])}</span>}
+        {isQuiz(part) && <span className="thread-card-note">{caseResult(state.outcomes[part.id])}</span>}
       </button>
     );
   }
@@ -161,6 +216,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
         <StatementView statement={statement} key={i} />
       ))}
       {part.kind === "click_case" && <CaseControls part={part} outcome={state.outcomes[part.id]} />}
+      {part.kind === "multiple_choice" && <ChoiceControls part={part} outcome={state.outcomes[part.id]} />}
     </article>
   );
 }
@@ -168,7 +224,7 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
 function SummaryCard({ state }: { state: PlayerState }) {
   const session = state.session!;
   const summary = session.summary!;
-  const cases = session.parts.filter((part) => part.kind === "click_case");
+  const cases = session.parts.filter(isQuiz);
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
     card.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -425,7 +481,7 @@ function Conversation({ asking, state }: { asking: Asking; state: PlayerState })
 export default function SessionThread() {
   const state = usePlayer();
   const { session, index } = state;
-  const waiting = caseIsOpen(state);
+  const waiting = quizIsOpen(state);
 
   if (!session && state.asking) return <Conversation asking={state.asking} state={state} />;
   if (!session) {

@@ -18,6 +18,23 @@ export type Source =
   /** Measured on the 3D model itself, e.g. a length. */
   | { type: "model" };
 
+/**
+ * What to call an atlas source when showing it: the title of the page it links
+ * to. Several atlas entries hold a whole page under one structure's name (the
+ * entry "Left ventricle" is the page "Ventricle (heart)", about both ventricles),
+ * so the entry's name can mislabel a fact. Falls back to the entry's name when
+ * there is no link or the link is not to a Wikipedia article.
+ */
+export function atlasTitle(source: { article: string; url: string | null }): string {
+  const match = source.url?.match(/^https?:\/\/[a-z]+\.wikipedia\.org\/wiki\/([^#?]+)/);
+  if (!match) return source.article;
+  try {
+    return decodeURIComponent(match[1]).replace(/_/g, " ");
+  } catch {
+    return source.article;
+  }
+}
+
 export interface Statement {
   text: string;
   source: Source;
@@ -101,9 +118,37 @@ export interface ClickCase extends PartBase {
   };
 }
 
-export type Part = Demonstration | Pulse | DamageSlider | ClickCase;
+/** One answer to a multiple-choice question, with what the student reads after picking it. */
+export interface Option {
+  /** Short, e.g. "Right coronary artery". An answer, not a claim, so it has no source. */
+  text: string;
+  correct: boolean;
+  /** Why this answer is right or wrong. */
+  feedback: Statement;
+}
 
-export const PART_KINDS = ["demonstration", "pulse", "damage_slider", "click_case"] as const satisfies readonly Part["kind"][];
+/**
+ * A question with a few answers to pick from, exactly one right. With
+ * `highlight` it asks about what is marked on the model, which is how the
+ * student is asked to name a structure; without, it quizzes what the model
+ * can't show.
+ */
+export interface MultipleChoice extends PartBase {
+  kind: "multiple_choice";
+  highlight: string[];
+  /** An invented patient, so it has no source; null for a plain question. */
+  story: string | null;
+  question: string;
+  options: Option[];
+}
+
+export type Part = Demonstration | Pulse | DamageSlider | ClickCase | MultipleChoice;
+
+export const PART_KINDS = ["demonstration", "pulse", "damage_slider", "click_case", "multiple_choice"] as const satisfies readonly Part["kind"][];
+
+/** A multiple-choice question has two to five options. */
+export const MIN_OPTIONS = 2;
+export const MAX_OPTIONS = 5;
 
 export interface PlanItem {
   part_id: string;
@@ -177,8 +222,8 @@ export interface SessionInPlay extends SessionStart {
   summary: Summary | null;
 }
 
-/** What the browser sends after the student answers a click case. */
-export interface Answer {
+/** What the browser sends after each click on a case. */
+export interface ClickAnswer {
   part_id: string;
   /** 1 for the first try. */
   attempt: number;
@@ -192,6 +237,21 @@ export interface Answer {
   /** Time from the case appearing to the click. */
   seconds: number;
 }
+
+/** What the browser sends after each pick on a multiple-choice question. */
+export interface ChoiceAnswer {
+  part_id: string;
+  /** 1 for the first try. */
+  attempt: number;
+  /** Which option, counted from 0 in the order the part lists them. */
+  choice: number;
+  correct: boolean;
+  /** Time from the question appearing to the pick. */
+  seconds: number;
+}
+
+/** Any answer the student gives: a click on a case or a pick on a question. */
+export type Answer = ClickAnswer | ChoiceAnswer;
 
 /** Slack when comparing distances with a piece's length, for rounding in the files. */
 const EPSILON = 1e-4;
@@ -399,6 +459,9 @@ class Check {
       case "click_case":
         this.clickCase(fields, path);
         break;
+      case "multiple_choice":
+        this.multipleChoice(fields, path);
+        break;
       default:
         this.fail(`${path}.kind`, `must be one of ${PART_KINDS.join(", ")}`);
     }
@@ -411,6 +474,33 @@ class Check {
     this.texts(fields, "solid", path);
     this.texts(fields, "shaky", path);
     this.list(fields, "sources", path).forEach((item, i) => this.source(item, `${path}.sources[${i}]`));
+  }
+
+  private multipleChoice(fields: Fields, path: string): void {
+    this.structures(fields, "highlight", path);
+    if (fields.story !== null) this.text(fields, "story", path);
+    this.text(fields, "question", path);
+    const options = this.list(fields, "options", path);
+    if (Array.isArray(fields.options) && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS)) {
+      this.fail(`${path}.options`, `must have ${MIN_OPTIONS} to ${MAX_OPTIONS} options`);
+    }
+    let right = 0;
+    const seen = new Set<string>();
+    options.forEach((option, i) => {
+      const optionPath = `${path}.options[${i}]`;
+      const optionFields = this.object(option, optionPath);
+      if (!optionFields) return;
+      const text = this.text(optionFields, "text", optionPath);
+      if (text !== null) {
+        const key = text.trim().toLowerCase();
+        if (seen.has(key)) this.fail(`${optionPath}.text`, "is the same as another option's");
+        seen.add(key);
+      }
+      if (typeof optionFields.correct !== "boolean") this.fail(`${optionPath}.correct`, "must be true or false");
+      else if (optionFields.correct) right += 1;
+      this.statement(optionFields.feedback, `${optionPath}.feedback`);
+    });
+    if (options.length > 0 && right !== 1) this.fail(`${path}.options`, `exactly one option must be correct, not ${right}`);
   }
 
   private clickCase(fields: Fields, path: string): void {

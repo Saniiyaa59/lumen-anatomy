@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { getHealth } from './api.ts'
 import SelectionChips from './selection/SelectionChips.tsx'
 import { selectionStore } from './selection/store.ts'
-import { caseIsOpen, usePlayer } from './session/player.ts'
+import { namesHidden as namesGiveAway, usePlayer } from './session/player.ts'
 import PositionReadout from './ui/PositionReadout.tsx'
 import SessionRail from './ui/SessionRail.tsx'
 import SessionThread from './ui/SessionThread.tsx'
@@ -61,8 +61,8 @@ export default function App() {
   const viewerRef = useRef<ViewerHandle>(null)
   const player = usePlayer()
   const inSession = player.session !== null
-  // While a case asks for a place, names on the model would give it away.
-  const namesHidden = caseIsOpen(player)
+  // While a case asks for a place, or a question asks what is highlighted, names on the model would give it away.
+  const namesHidden = namesGiveAway(player)
 
   useEffect(() => {
     let cancelled = false

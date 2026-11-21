@@ -31,11 +31,11 @@ A study session is a back-and-forth. The browser sends the student's request and
 | `type` | Other fields | Shown to the student as |
 | --- | --- | --- |
 | `notes` | `file`, `page` | "Your notes, page 12" |
-| `atlas` | `article`, `url` (or `null`) | The article's name, linked |
+| `atlas` | `article`, `url` (or `null`) | The title of the page `url` links to, linked; the article's name when there is no link |
 | `web` | `title`, `url` | The page's title, linked |
 | `model` | none | "Measured on the model" |
 
-`article` is a `key` in `assets/text/z_anatomy_articles.jsonl`, and `url` is that article's `source_url`.
+`article` is a `key` in `assets/text/z_anatomy_articles.jsonl`, and `url` is that article's `source_url`. Several articles hold a whole page under one structure's name ("Left ventricle" is the page *Ventricle (heart)*, about both ventricles), so the browser names a source by its page, and the summary lists each page once.
 
 **View** names what to look at, not where the camera is. `look_at` is a list of structure ids to frame. `side` is `anterior`, `posterior`, `left`, `right`, `superior`, `inferior`, or `null` to let the viewer pick a side from which they can be seen. The agent cannot know camera coordinates; the viewer can work them out.
 
@@ -46,7 +46,7 @@ Every part has these fields:
 | Field | Meaning |
 | --- | --- |
 | `id` | Unique within the session |
-| `kind` | `demonstration`, `pulse`, `damage_slider` or `click_case` |
+| `kind` | `demonstration`, `pulse`, `damage_slider`, `click_case` or `multiple_choice` |
 | `title` | Shown above the part |
 | `view` | A View |
 | `hide` | What is hidden for this part, such as what is in the way. Each entry is a structure id, or a group id to hide everything in that group (`cardiac_veins`) |
@@ -60,12 +60,20 @@ Each kind adds its own:
 | `pulse` | `from`: Place; `to`: Place or `null` | A pulse runs from `from` to `to`. With `null` it spreads into every branch beyond `from` |
 | `damage_slider` | `track`: Region; `start_at`: distance; `zones`: list of `{regions, statement}` | The student drags a damage point along `track`. Everything beyond it greys out. A zone's statement shows while the point is inside that zone |
 | `click_case` | `story`, `question`, `answer`, `feedback` | The student reads the story and clicks where the problem is |
+| `multiple_choice` | `highlight`: structure ids (may be empty); `story`: text or `null`; `question`; `options`: 2 to 5 of `{text, correct, feedback}` | The student picks one answer and reads its feedback |
 
 For a `click_case`:
 
 - `answer` is a Target plus `tolerance`: how far past the end of a region a click still counts, in metres.
 - `feedback.correct` and `feedback.wrong` are Statements.
 - `feedback.near_misses` is a list of Targets, each with its own `statement`, for wrong places that deserve a specific explanation. A near miss may not overlap the answer.
+
+For a `multiple_choice`:
+
+- Exactly one option has `correct: true`, and no two options have the same text.
+- `feedback` is a Statement: why that answer is right or wrong. It is shown once the student picks it.
+- With `highlight`, the question is about what is marked ("Which artery is highlighted?"). This is how the student is asked to name a structure, so the viewer hides names on the model, labels and hover alike, until they have answered, as it does during a case. Without `highlight` the question is about something the model can't show, and the view is only a backdrop; its `side` may be `null`.
+- `story`, like a case's, is an invented patient and has no source.
 
 "Beyond" always means away from the trunk: the rest of the piece, and every branch that leaves after that point. In an artery this is what a blockage cuts off.
 
@@ -98,6 +106,8 @@ A **recorded session** is all of this in one file: the start fields, plus `parts
 
 **At the start:** the student's request as text, and optionally their notes as a PDF.
 
+**After each pick on a multiple-choice question:** `part_id`, `attempt`, `choice` (which option, counted from 0 in the order the part lists them), `correct` (the browser's grading) and `seconds`.
+
 **After each click on a case:**
 
 | Field | Meaning |
@@ -129,6 +139,7 @@ If it is not correct, the first near miss that contains it supplies the feedback
 - that a pulse's end lies beyond its start;
 - that a slider starts on its track;
 - that a case has an answer, and no near miss overlaps it;
+- that a multiple-choice question has two to five options, all different, exactly one of them right;
 - that plan items point to real parts of the same kind, and part ids are unique.
 
 It does **not** check that an article exists (the articles file is not loaded in the browser), that a case has only one defensible answer, that the anatomy is right, or that the thing a part talks about can be seen in its view. Those are for the backend and the agent's own checks.
@@ -143,7 +154,7 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 | `POST /api/sessions/{id}/reply` | `text`: the student's answer to the tutor's question | The start fields, or another question. A 409 if the tutor isn't waiting for an answer |
 | `POST /api/sessions/{id}/chat` | `text`; `selected`: structure ids selected on the model; `part_id`: the part on screen, or `null` | `{statements, point_to, plan, plan_changed}`: the tutor's answer as sourced Statements, structure ids for the browser to select, and the current plan. A 409 before the plan, or from the sample |
 | `POST /api/sessions/{id}/next` | None | `{part, plan, done}`: the next part and the current plan, or `part: null` with `done: true` when there are no more |
-| `POST /api/sessions/{id}/answers` | An answer, as above | `{plan}`: the current plan, which the agent may have changed |
+| `POST /api/sessions/{id}/answers` | An answer, as above: a click or a pick | `{plan}`: the current plan, which the agent may have changed |
 | `POST /api/sessions/{id}/finish` | None | The summary |
 | `GET /api/sessions/{id}` | None | What the backend holds: the request, where its parts come from, the notes' file name and size, how many parts were sent, every answer, any parts the agent gave up on, how many requests and tokens the session has used, and `timings`: for each recent request to Claude, its task, how long Claude took, how long the backend's own work on the reply took, and what came of it (lookups, a hand-in accepted or rejected). For checking, not for the student |
 | `GET /api/tutor` | None | `{source}`: `sample` or `agent`, so the app can tell the student what to expect |
@@ -154,7 +165,7 @@ Built on the backend in `backend/app/sessions.py`. A session's parts come from o
 - `finish` keeps the summary: asking again returns it without calling Claude.
 - When the agent or the Claude API fails, the reply is a 502 with the reason in words. The browser shows it and offers to try again.
 - Notes must be a PDF of at most 20 MB; anything else gets a 422 or a 413.
-- An answer must be for a case the session has already been sent, or it gets a 422.
+- An answer must be for a case or question the session has already been sent, and a pick must name one of the question's options, or it gets a 422. After a case or question with a wrong answer, the agent may add one part before the rest: never after a part it added itself, and at most two in a session. It decides as soon as the right answer arrives, and builds that part straight away, so it is ready when the student asks for the next part; if the answer was shown or skipped instead, it decides when `next` is called.
 - The backend's models (`backend/app/session_schemas.py`) check shape. `backend/app/session_check.py` checks that every id, piece and distance exists on the model, as the browser does, and also that each atlas source names a real article with its own link, which the browser cannot do. The agent runs it on every part it builds, before the part can be sent.
 
 The notes travel as base64 inside JSON, not as a file upload, so the backend needs no extra package and the body is already in the form the Claude API takes a PDF in.
