@@ -215,7 +215,7 @@
           "text": "Right coronary artery",
           "correct": true,
           "feedback": {
-            "text": "Right. It runs down the groove on the right side of the heart, towards the back.",
+            "text": "It runs down the groove on the right side of the heart, towards the back.",
             "source": { "type": "atlas", "article": "Right coronary artery", "url": "https://en.wikipedia.org/wiki/Right_coronary_artery" }
           }
         },
