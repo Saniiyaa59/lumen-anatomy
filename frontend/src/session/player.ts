@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { Working } from "../api.ts";
 import type { ClickPlace } from "../selection/store.ts";
-import type { Answer, ChoiceAnswer, ClickAnswer, Part, PlanItem, Question, SessionInPlay, Statement, Summary } from "./format.ts";
+import type { Answer, ChoiceAnswer, ClickAnswer, ClickCase, MultipleChoice, Part, PlanItem, Question, SessionInPlay, Statement, Summary } from "./format.ts";
 import { grade, type Clicked } from "./grade.ts";
 
 /** How a click case or a multiple-choice question stands for the student. */
@@ -137,6 +137,42 @@ export function questionIsOpen(state: PlayerState): boolean {
   if (part?.kind !== "multiple_choice") return false;
   const outcome = state.outcomes[part.id];
   return !outcome?.correct && !outcome?.revealed;
+}
+
+/** How the student did on one case or question, for the summary. */
+export interface QuizResult {
+  part: ClickCase | MultipleChoice;
+  /** Index of the part in the session, to go back to it. */
+  index: number;
+  /** "first": right on the first try; "later": right after wrong tries; "shown": the answer was shown; "skipped": never answered. */
+  result: "first" | "later" | "shown" | "skipped";
+  attempts: number;
+}
+
+/** Every case and question in the session, in order, with how the student did on it. */
+export function quizResults(session: SessionInPlay, outcomes: PlayerState["outcomes"]): QuizResult[] {
+  return session.parts.flatMap((part, index) => {
+    if (part.kind !== "click_case" && part.kind !== "multiple_choice") return [];
+    const outcome = outcomes[part.id];
+    const attempts = outcome?.attempts ?? 0;
+    const result = outcome?.correct ? (attempts <= 1 ? "first" : "later") : outcome?.revealed ? "shown" : "skipped";
+    return [{ part, index, result, attempts }];
+  });
+}
+
+/**
+ * What to ask for in a follow-up session on what went less well: the summary's
+ * shaky topics, or, if it names none, the questions not right first time.
+ * Null when there is nothing to go over.
+ */
+export function followUpRequest(session: SessionInPlay, outcomes: PlayerState["outcomes"]): string | null {
+  const topics = session.summary?.shaky.length
+    ? session.summary.shaky
+    : quizResults(session, outcomes)
+        .filter((quiz) => quiz.result !== "first")
+        .map((quiz) => quiz.part.title);
+  if (topics.length === 0) return null;
+  return `Go over these again with me: ${topics.join("; ")}`;
 }
 
 /** True while the part on screen is a case or question still waiting for an answer. */

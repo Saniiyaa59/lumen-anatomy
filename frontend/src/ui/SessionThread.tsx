@@ -6,7 +6,7 @@ import { selectionStore } from "../selection/store.ts";
 import { atlasTitle, parseSession, type ClickCase, type DamageSlider, type MultipleChoice, type Part, type Source, type Statement } from "../session/format.ts";
 import { inTarget } from "../session/grade.ts";
 import { liveSessions } from "../session/live.ts";
-import { currentPart, playerStore, questionIsOpen, quizIsOpen, usePlayer, type Asking, type CaseOutcome, type PlayerState, type SessionMessage } from "../session/player.ts";
+import { currentPart, playerStore, questionIsOpen, quizIsOpen, usePlayer, followUpRequest, quizResults, type Asking, type CaseOutcome, type PlayerState, type QuizResult, type SessionMessage } from "../session/player.ts";
 
 const KIND_NAMES: Record<Part["kind"], string> = {
   demonstration: "Demonstration",
@@ -240,10 +240,31 @@ function PartCard({ part, step, state }: { part: Part; step: number; state: Play
   );
 }
 
+const RESULT_WORDS: Record<QuizResult["result"], string> = {
+  first: "Right first time",
+  later: "Right after a wrong try",
+  shown: "Answer shown",
+  skipped: "Skipped",
+};
+
+/** A right answer's feedback is written to be read just after a right answer, so it may open with "Right."; here it follows "Answer:". */
+const withoutVerdict = (text: string) => text.replace(/^(right|correct)[.!,:]\s*/i, "");
+
+/** What the right answer was, for a question or case the student did not get first time. */
+function rightAnswer(part: ClickCase | MultipleChoice): Statement {
+  if (part.kind === "multiple_choice") {
+    const right = part.options.find((option) => option.correct)!;
+    return { ...right.feedback, text: `${right.text}. ${withoutVerdict(right.feedback.text)}` };
+  }
+  return { ...part.feedback.correct, text: withoutVerdict(part.feedback.correct.text) };
+}
+
 function SummaryCard({ state }: { state: PlayerState }) {
   const session = state.session!;
   const summary = session.summary!;
-  const cases = session.parts.filter(isQuiz);
+  const quizzes = quizResults(session, state.outcomes);
+  const firstTime = quizzes.filter((quiz) => quiz.result === "first").length;
+  const followUp = followUpRequest(session, state.outcomes);
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
     card.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -251,13 +272,39 @@ function SummaryCard({ state }: { state: PlayerState }) {
   return (
     <article className="thread-card thread-card-open" ref={card}>
       <p className="thread-kind">Summary</p>
-      {cases.length > 0 && (
+      {quizzes.length > 0 && (
         <>
-          <h4>Your answers</h4>
-          <ul className="thread-list">
-            {cases.map((part) => (
-              <li key={part.id}>
-                {part.title}: {caseResult(state.outcomes[part.id]).toLowerCase()}
+          <div className="thread-score">
+            <p className="thread-score-line">
+              <strong>
+                {firstTime} of {quizzes.length}
+              </strong>{" "}
+              right first time
+            </p>
+            <ol className="thread-score-dots" aria-hidden="true">
+              {quizzes.map((quiz) => (
+                <li key={quiz.part.id} data-result={quiz.result} title={`${quiz.part.title}: ${RESULT_WORDS[quiz.result].toLowerCase()}`} />
+              ))}
+            </ol>
+          </div>
+          <ul className="thread-results">
+            {quizzes.map((quiz) => (
+              <li key={quiz.part.id} data-result={quiz.result}>
+                <div className="thread-result-head">
+                  <span className="thread-result-title">{quiz.part.title}</span>
+                  <span className="thread-result-word">{RESULT_WORDS[quiz.result]}</span>
+                </div>
+                {quiz.result !== "first" && (
+                  <>
+                    <p className="thread-result-answer">
+                      <span className="thread-result-label">Answer: </span>
+                      {rightAnswer(quiz.part).text} <SourceTag source={rightAnswer(quiz.part).source} />
+                    </p>
+                    <button type="button" className="thread-link" onClick={() => playerStore.goTo(quiz.index)}>
+                      Go back to it
+                    </button>
+                  </>
+                )}
               </li>
             ))}
           </ul>
@@ -270,11 +317,20 @@ function SummaryCard({ state }: { state: PlayerState }) {
         ))}
       </ul>
       <h4>Worth another look</h4>
-      <ul className="thread-list">
-        {summary.shaky.map((line) => (
-          <li key={line}>{line}</li>
-        ))}
-      </ul>
+      {summary.shaky.length > 0 ? (
+        <ul className="thread-list">
+          {summary.shaky.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>Nothing this time.</p>
+      )}
+      {followUp && (
+        <button type="button" className="thread-follow-up" disabled={state.pending} onClick={() => startSession(followUp, null)}>
+          Start a session on these
+        </button>
+      )}
       <h4>Sources used</h4>
       <ul className="thread-list thread-sources">
         {summary.sources.map((source, index) => (

@@ -397,7 +397,7 @@ SUBMIT_SUMMARY_TOOL: dict[str, Any] = {
         "type": "object",
         "properties": {
             "solid": {"type": "array", "items": {"type": "string"}, "description": "Short phrases: what the student showed they understand, or was covered without trouble."},
-            "shaky": {"type": "array", "items": {"type": "string"}, "description": "Short phrases: what to look at again, judged from their wrong clicks."},
+            "shaky": {"type": "array", "items": {"type": "string"}, "description": "Short phrases, each naming one topic to look at again, judged from their wrong answers. Empty if they got nothing wrong. No notes on tries: the student can start a session on these."},
         },
         "required": ["solid", "shaky"],
     },

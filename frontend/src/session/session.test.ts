@@ -4,7 +4,7 @@ import { Centerlines, centerlines, type CenterlinesFile, type Piece, type Point 
 import type { ClickPlace } from "../selection/store.ts";
 import { parseSession, type ClickCase, type MultipleChoice } from "./format.ts";
 import { grade, inTarget } from "./grade.ts";
-import { caseIsOpen, currentPart, namesHidden, outOfPicks, PlayerStore, questionIsOpen, quizIsOpen } from "./player.ts";
+import { caseIsOpen, currentPart, followUpRequest, namesHidden, outOfPicks, PlayerStore, questionIsOpen, quizIsOpen, quizResults } from "./player.ts";
 import { pulseRoute, pulseStretches } from "./pulse.ts";
 
 const session = parseSession(sample);
@@ -337,5 +337,30 @@ describe("PlayerStore", () => {
 
   it("shows the answer as soon as a wrong pick leaves only one option", () => {
     expect([outOfPicks(1, 4), outOfPicks(2, 4), outOfPicks(1, 2), outOfPicks(1, 3)]).toEqual([false, true, true, false]);
+  });
+});
+
+describe("the summary's results", () => {
+  const caseIndex = session.parts.indexOf(theCase);
+  const questionIndex = session.parts.indexOf(theQuestion);
+
+  it("lists each case and question in order, with how it went", () => {
+    const right = { attempts: 1, correct: true, revealed: false, statement: null, lastClick: null };
+    expect(quizResults(session, {}).map((quiz) => [quiz.part.id, quiz.index, quiz.result])).toEqual([
+      [theCase.id, caseIndex, "skipped"],
+      [theQuestion.id, questionIndex, "skipped"],
+    ]);
+    const results = quizResults(session, { [theCase.id]: right, [theQuestion.id]: { ...right, attempts: 2, picks: [1, 0] } });
+    expect(results.map((quiz) => quiz.result)).toEqual(["first", "later"]);
+    const shown = quizResults(session, { [theQuestion.id]: { ...right, correct: false, revealed: true } });
+    expect(shown[1].result).toBe("shown");
+  });
+
+  it("asks a follow-up on the shaky topics, or on what was missed when there are none", () => {
+    expect(followUpRequest(session, {})).toBe("Go over these again with me: Placing a blockage from what it cuts off");
+    const noShaky = { ...session, summary: { ...session.summary!, shaky: [] } };
+    const right = { attempts: 1, correct: true, revealed: false, statement: null, lastClick: null };
+    expect(followUpRequest(noShaky, { [theCase.id]: right })).toBe(`Go over these again with me: ${theQuestion.title}`);
+    expect(followUpRequest(noShaky, { [theCase.id]: right, [theQuestion.id]: right })).toBeNull();
   });
 });

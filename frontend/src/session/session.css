@@ -773,3 +773,114 @@ a.source:hover {
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.45);
 }
+
+/* The summary: how the student did on each case and question. */
+.thread-score {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  margin: 2px 0 12px;
+}
+
+.thread-score-line {
+  margin: 0 !important;
+  font-size: 15px;
+}
+
+.thread-score-line strong {
+  font-size: 22px;
+}
+
+.thread-score-dots {
+  display: flex;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thread-score-dots li,
+.thread-results li::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(232, 236, 239, 0.25);
+}
+
+.thread-score-dots li[data-result='first'],
+.thread-results li[data-result='first']::before {
+  background: #4ade80;
+}
+
+.thread-score-dots li[data-result='later'],
+.thread-results li[data-result='later']::before {
+  background: #f5b84f;
+}
+
+.thread-score-dots li[data-result='shown'],
+.thread-results li[data-result='shown']::before {
+  background: #8fc1ff;
+}
+
+.thread-results {
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.thread-results li {
+  position: relative;
+  padding: 8px 0 8px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.thread-results li::before {
+  content: '';
+  position: absolute;
+  top: 13px;
+  left: 2px;
+}
+
+.thread-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.thread-result-word {
+  flex: none;
+  font-size: 12px;
+  color: rgba(232, 236, 239, 0.55);
+}
+
+.thread-result-answer {
+  margin: 4px 0 2px !important;
+  font-size: 13px;
+  color: rgba(232, 236, 239, 0.8);
+}
+
+.thread-result-label {
+  font-weight: 600;
+}
+
+.thread-follow-up {
+  margin: 10px 0 4px;
+  padding: 8px 14px;
+  border: 1px solid #4f9cf0;
+  border-radius: 8px;
+  font: inherit;
+  color: #101418;
+  background: #4f9cf0;
+  cursor: pointer;
+}
+
+.thread-follow-up:hover:not(:disabled) {
+  background: #6aaef5;
+}
+
+.thread-follow-up:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

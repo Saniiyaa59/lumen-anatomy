@@ -74,7 +74,7 @@ What this model cannot show: which part of an organ's wall a vessel supplies (th
    A statement says only what its source says. Don't add to it what the session will do next, what a later part covers, or a fact from somewhere else: give a further fact its own statement and source, and leave remarks about the session out, since every statement must have a source.
 3. The student must be able to see what a part is about when it opens. The code sees to this: leave `view.side` out, put in `view.look_at` what the camera should frame, and the code picks the side and adds what is in front to `hide`. It never hides the part's subject, and hides what you frame only when it must. Don't mention the side in what you write unless you chose it with `find_view`. Give a side yourself only to insist on it; if too little shows from there, the code picks another.
 4. A click case needs exactly one right place. Give findings that only that place explains, and check with `beyond` that they match what the model shows. Add near misses for the wrong clicks a student is likely to make, each with its own short explanation. A near miss may not overlap the answer.
-5. A multiple-choice question has exactly one right answer, and neither the question nor the story may contain its words. The wrong answers are things a student could believe: the same kind of thing as the right one (all arteries, say), never silly. Each answer's feedback says why it is right or wrong and has a source like any statement. The right answer's feedback may be shown after the student has picked wrong ones, so it does not begin with "Right" or "Correct": it just says why that answer is the one.
+5. A multiple-choice question has exactly one right answer, and neither the question nor the story may contain its words. The wrong answers are things a student could believe: the same kind of thing as the right one (all arteries, say), never silly. Each option is a different answer: none repeats another's words with something added. Each answer's feedback says why it is right or wrong and has a source like any statement. The right answer's feedback may be shown after the student has picked wrong ones, so it does not begin with "Right" or "Correct": it just says why that answer is the one.
 
 # Writing
 
@@ -563,7 +563,7 @@ class Agent:
                 if structure_id in vessels
             ]
         if isinstance(part, MultipleChoice):
-            problems += _gives_away(part)
+            problems += _gives_away(part) + _overlapping_options(part)
         if not problems:
             part, seeing = self._settle_view(part)
             problems += seeing
@@ -747,7 +747,9 @@ class Agent:
         task = (
             f"{self._background(brief)}\n\nThe session is over. How it went:\n" + "\n".join(results) + "\n\n"
             "Write the closing summary with submit_summary: what was solid and what is worth another look. Short phrases, two or three of each at most. "
-            "Base 'worth another look' on what they got wrong; if they got nothing wrong, say so in one phrase."
+            "Base 'worth another look' on what they got wrong; if they got nothing wrong, leave it empty. "
+            "Each phrase names a topic and nothing else, with no note on how many tries it took: the student can start a new session on these phrases. "
+            "A topic goes in one list, never both."
         )
 
         def accept(raw: dict) -> tuple[list[str], list[str]]:
@@ -755,6 +757,9 @@ class Agent:
             shaky = [str(line).strip() for line in raw.get("shaky") or [] if str(line).strip()]
             if not solid and not shaky:
                 raise _Rejected(["give at least one phrase in solid or shaky"])
+            both = {_squash(line) for line in solid} & {_squash(line) for line in shaky}
+            if both:
+                raise _Rejected([f'"{line}" is in both solid and shaky: put each topic in one list' for line in shaky if _squash(line) in both])
             return solid, shaky
 
         return self._work(task, SUBMIT_SUMMARY_TOOL, accept, stage="summary", brief=brief, doing="Writing your summary")
@@ -767,6 +772,18 @@ def _gives_away(question: MultipleChoice) -> list[str]:
     if re.search(rf"\b{re.escape(_squash(right))}\b", asked):  # whole words: "LAD" is not in "bladder"
         return [f'part.question: the question or story says "{right}", the right answer, so it gives itself away. Describe it by findings or by where it is instead.']
     return []
+
+
+def _overlapping_options(question: MultipleChoice) -> list[str]:
+    """Problems if one option's words are all inside another's ("Right dominant" and "Right dominant, as it still feeds..."),
+    which makes two answers out of one idea and lets a student spend both wrong picks on it."""
+    texts = [(option.text, _squash(re.sub(r"[^\w\s]", " ", option.text))) for option in question.options]
+    return [
+        f'part.options: "{inner}" is inside "{outer}", so they are one answer twice. Make each option a different answer.'
+        for inner, inner_words in texts
+        for outer, outer_words in texts
+        if inner != outer and re.search(rf"\b{re.escape(inner_words)}\b", outer_words)
+    ]
 
 
 def sources_used(parts: list[Part]) -> list[Source]:

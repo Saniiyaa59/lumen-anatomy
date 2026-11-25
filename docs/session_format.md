@@ -99,7 +99,7 @@ For a `multiple_choice`:
 
 **For each part:** one part, in the shape above. The plan may be sent again if it changed.
 
-**At the end:** `summary`, with `solid` and `shaky` (lists of short sentences) and `sources` (every source used).
+**At the end:** `summary`, with `solid` and `shaky` (lists of short phrases, each naming a topic; a topic is in one list only, and `shaky` is empty when nothing went wrong) and `sources` (every source used). The browser offers a new session on the `shaky` topics.
 
 A **recorded session** is all of this in one file: the start fields, plus `parts` (the list of parts) and `summary`. The sample is one. The player can run a recorded session with no backend, which is what "Play the built-in sample instead" does when the backend can't be reached.
 
