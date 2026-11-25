@@ -71,6 +71,7 @@ def test_a_question_about_what_the_model_cannot_show_needs_no_highlight_and_no_p
         (lambda d: d.update(options=d["options"][:1]), "at least 2"),
         (lambda d: d.update(question="Is the highlighted vessel the right coronary artery?"), "gives itself away"),
         (lambda d: d.update(story="Her right coronary artery is blocked.", question="Which is highlighted?"), "gives itself away"),
+        (lambda d: d["options"][2].update(text="Right coronary artery, as it is the largest"), "so they are one answer twice"),
         (lambda d: d.update(highlight=["spleen"]), '"spleen" is not a structure'),
         (lambda d: d["options"][1]["feedback"]["source"].update(quote="The LAD is a vessel of the heart, made up."), "word for word"),
     ],
@@ -117,6 +118,16 @@ def test_decide_and_summarise_read_the_picks():
     agent.summarise(brief, picks(1, 0))
     assert "Name the highlighted artery: correct on try 2" in llm.asked[1][1][0]["content"]
     assert len(sources_used([question])) == 3
+
+
+def test_a_summary_with_one_topic_in_both_lists_is_sent_back():
+    question, _ = build(choice_draft())
+    brief = Brief(request="x", plan=[NAME_IT], built=[question])
+    twice = call("submit_summary", solid=["Naming the right coronary artery"], shaky=["naming the right coronary artery "])
+    agent, llm = agent_with(submit_summary=[reply(twice), reply(call("submit_summary", solid=["Naming the right coronary artery"], shaky=[]))])
+    assert agent.summarise(brief, picks(0)) == (["Naming the right coronary artery"], [])
+    sent_back = llm.last_results("submit_summary")[0]
+    assert sent_back["is_error"] is True and "in both solid and shaky" in sent_back["content"]
 
 
 PLAN = {
