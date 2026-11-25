@@ -1,135 +1,200 @@
 # Lumen
 
-> **Placeholder draft**
+Lumen is an agentic 3D anatomy tutor for the heart. A student says what they need, such as "Prepare me on the blood supply of the heart", and can attach their lecture notes. A Claude agent plans a short study session and builds it one part at a time, on a 3D model of the heart. Every part is a demonstration, an animation, an experiment or a quiz. The agent adapts the plan to the student's answers.
 
-Lumen is an agentic 3D anatomy tutor. Students explore a 3D heart, click one or several structures, and type or speak about them: "Why is this wall so thick?" or "How does blood get from here to there?" An AI agent resolves what "this" and "there" refer to, then acts directly in the 3D scene, with answers grounded in an open anatomy textbook.
+Every fact the student reads carries a source: a quote from the anatomy atlas, a page of their notes, or a measurement taken from the 3D model. Harness code checks each part the agent hands in against the model and the sources before the student sees it.
 
 Built for CS598 Agentic AI (BU, Fall 2026), Application track.
 
 ## Status
 
-Early development. The project skeleton (React + Three.js frontend, FastAPI backend with a health check) and the extracted heart model are in place. The features and agent described below are the intended design and aren't built yet.
+The core loop works end to end:
 
-## Planned features
+- planning, the five kinds of part, and adapting to the student's answers;
+- chat during a session;
+- uploaded notes;
+- the summary, and a follow-up session on the shaky topics.
 
-- **3D heart viewer:** about 15–18 labeled structures, with rotate, zoom, hover highlight, layers, undo and reset.
-- **Multi-select with chips:** click to select, Shift-click to add, with selection order preserved.
-- **Reference resolution:** "this", "these", "here" and "there" map to the clicked structures. Ambiguous references produce a clarifying question instead of a guess.
-- **Scene actions:** the agent can highlight, isolate, label, move the camera, change layers and animate blood flow.
-- **Guided walkthroughs:** one command becomes a multi-step sequence with Next and Back.
-- **Cited answers:** textbook search is filtered to the referenced structures, and answers cite the passages they rely on.
-- **Reusable toolbar:** Explain, Compare, Show path, Isolate and Quiz me on these.
-- **Click-based quizzes:** "Click the mitral valve" is graded by the click, and later quizzes target past mistakes.
-- **Push-to-talk voice:** hold Space to speak while clicking, with word timestamps matched to click times.
-- **Later additions:** cross-sections, notes pinned to structures by the student or the agent, and an MCP server that lets external agents author lessons.
+Current work:
+
+- usability polish;
+- reducing the wait for the first part;
+- an evaluation of the agent;
+- preparing the demo on Dec 10.
+
+The plan is in [Next steps](#next-steps).
+
+## What a session looks like
+
+1. **Ask.** The student types a request, and can attach a PDF of their notes. If the request is too vague, the tutor asks one question first ("Is this for an exam, or to understand it?").
+2. **Plan.** The tutor replies with a plan of two to five parts. It also says what the model can show and what it can only cover in words: the model has no wall territories or conducting system, for example.
+3. **Parts.** The parts arrive one at a time, and the next ones are built while the student works on the current one. Each part sets the camera, hides what is in the way and highlights what matters.
+
+   | Kind | What the student does |
+   | --- | --- |
+   | Demonstration | Reads sourced statements while the structures are highlighted |
+   | Follow the flow | Watches a pulse travel along a vessel's route |
+   | Try it | Drags a blockage along an artery and sees what loses its supply |
+   | Case | Reads a patient story and clicks where the problem is. Names are hidden, and the browser grades the click |
+   | Question | Multiple choice, picked with a click or the keys 1–5. The answer is shown after two wrong picks |
+
+4. **Adapt.** After a wrong answer, the tutor decides whether to add a part aimed at that mistake. It decides at most twice per session, never after an added part, and never after the last part. The decision starts as soon as the answer is final, so the added part is usually ready by the time the student presses Next.
+5. **Chat.** At any point the student can select structures and ask about them. The answer is sourced like everything else, and can change the remaining plan.
+6. **Summary.** The summary shows:
+   - a score (right first time);
+   - each missed question, with its answer and source and a link back to it;
+   - what was solid and what is worth another look;
+   - every source used;
+   - a button to start a new session on the shaky topics.
+
+While the student waits, a progress line shows what the tutor is doing, for example "Building “Name the artery”: reading the atlas page on Coronary circulation · 12 s".
+
+The app also runs without the agent, using a hand-written sample session ([`assets/fixtures/sessions/coronary_arteries.json`](assets/fixtures/sessions/coronary_arteries.json)) that costs nothing.
 
 ## System design
-
-Each command is one request in and one response out. Deterministic harness code prepares the request, a single LLM plans with tools, and the harness checks every tool call before anything reaches the 3D scene.
 
 ```mermaid
 flowchart LR
     subgraph Browser
-        A["Words + clicks<br/>selection, click log,<br/>scene state"]
-        X["Action executor<br/>runs actions on the 3D scene"]
+        P["Player<br/>parts, answers, outcomes"]
+        S["Stage<br/>camera, hiding, paint,<br/>pulse, click grading"]
+        P --> S
     end
-    subgraph Harness["Harness (FastAPI)"]
-        S1["1. Transcribe voice"] --> S2["2. Expand toolbar command"]
-        S2 --> S3{"3. Resolve references"}
-        S3 -- ambiguous --> C["Clarification:<br/>Click the structure you mean"]
-        S3 -- resolved IDs --> S4["4. Build context"]
-        S4 --> L
-        subgraph Loop["5. Agent loop (max 8 rounds)"]
-            L["LLM (Claude)"] -- tool call --> T["Tool router"]
-            T -- result or error --> L
-        end
-        L -- final answer --> S6["6. Assemble response"]
-        S6 --> S7["7. Save to SQLite"]
+    subgraph Backend["Backend (FastAPI)"]
+        R["Session routes<br/>/api/sessions/…"]
+        A["Agent<br/>(Claude, tool use)"]
+        T["Lookup tools<br/>model, atlas, notes"]
+        C["Checks<br/>format, sources, geometry,<br/>visibility, giveaways"]
+        B["Builders<br/>parts built ahead, in parallel"]
+        D[("SQLite<br/>sessions")]
+        R --> B --> A
+        A -- lookup --> T --> A
+        A -- hand in a part --> C
+        C -- problems: try again --> A
+        C -- accepted --> R
+        R --> D
     end
-    A -- "POST /api/command" --> S1
-    C --> X
-    S7 -- "answer, citations, actions[]" --> X
+    P -- "request, notes, answers, chat" --> R
+    R -- "plan, parts, summary" --> P
 ```
 
-Rotating, zooming, hovering and selecting all happen in the browser and never wait on the backend.
+### The agent
 
-### Input
+One Claude model, `claude-opus-5-5` by default, handles every task: planning, building each part, chat answers, deciding what to do after a wrong answer, and the summary. Each task is a short tool-use loop. The agent looks things up, then hands in its result through a submit tool. The harness checks the result, and sends any problems back as the tool result so the agent can correct them. The prompt and the task builders are in [`backend/app/agent.py`](backend/app/agent.py), and the tool definitions are in [`backend/app/agent_tools.py`](backend/app/agent_tools.py).
 
-The browser sends one `POST /api/command` per command:
-
-| Field | Contents |
+| Lookup tools | What they answer |
 | --- | --- |
-| `text` or `audio` | Typed command, or push-to-talk recording |
-| `selection` | Selected structure IDs, in click order |
-| `click_events` | Each selection click with a timestamp |
-| `toolbar_command` | `explain`, `compare`, `show_path`, `isolate` or `quiz`, if a button was pressed |
-| `scene_state` | Current view, visible layers, highlights and cross-section |
-| `mode` | `explore` or `quiz` |
-| `session_id` | Links the request to conversation history and quiz progress |
+| `describe` | What a structure or group is: what it sits inside, its atlas article, and, for a vessel, its centre-line pieces and their lengths |
+| `branches_of`, `beyond`, `route` | A vessel's branches and where they leave it, what a blockage at a point cuts off, and the route between two points. All are measured on the model's centre lines |
+| `find_view` | Which side a set of structures can be seen from, and what must be hidden to see them |
+| `search_articles`, `read_article` | The anatomy atlas: 3,800 articles, most of them extracts of Wikipedia |
+| `search_notes`, `read_notes_page` | The student's uploaded notes, page by page |
 
-### Harness
-
-1. **Transcribe:** voice commands go through Whisper, which gives a start time for every word.
-2. **Expand toolbar commands:** a button press becomes ordinary instruction text, such as "Compare these structures: Mitral valve, Aortic valve", so buttons and typed commands follow the same path.
-3. **Resolve references:** rule-based code maps "this", "that", "here", "there", "these" and "those" to structure IDs. Typed commands use selection order; voice commands match each word to the nearest click in time. With no selection or a count mismatch, the harness asks the student to click and stops without calling the LLM.
-4. **Build context:** the system prompt, the last ~6 turns, and the command with references filled in, plus the selection, scene state and mode. The LLM only ever sees structure IDs, not raw clicks.
-5. **Agent loop:** the only stage that calls the LLM. Each round, the LLM either answers or asks for tools, and the harness runs them and returns the results. The loop ends when the LLM replies without a tool call, or after 8 rounds.
-6. **Assemble the response:** the final text becomes the answer, citation markers are matched to retrieved textbook passages, and recorded scene actions become `actions[]` in call order.
-7. **Persist:** the turn, viewed structures, quiz attempts, walkthroughs and notes are saved to SQLite.
-
-### Tools
-
-The LLM has two kinds of tools:
-
-- **Backend tools** run on the server and return data to the LLM: `retrieve` (textbook search filtered to the referenced structures), `lookup_structure`, `list_structures`, `get_path`, `create_walkthrough`, `quiz_next`, `check_answer`, `get_progress` and `get_notes`.
-- **Scene tools** never run on the server: `highlight`, `isolate`, `label`, `set_view`, `focus`, `set_visibility`, `fade_others`, `animate_path`, `cross_section`, `add_note`, `set_selection`, `reset_view` and the `clear_*` actions. The harness checks their arguments against the structure registry (`assets/structures.json`), records them as actions and replies "ok". An unknown structure, view, path or section goes back to the LLM as an error so it can correct itself in the next round.
-
-The MCP server exposes the backend tools plus `create_lesson` to external agents such as Claude Desktop, so they can author lessons that play in Lumen.
-
-### Output
-
-| Field | Contents |
+| Submit tools | What they hand in |
 | --- | --- |
-| `answer` | 2–4 sentences, with citation markers |
-| `citations` | Chunk ID, textbook section and OpenStax link for each cited passage |
-| `actions` | Scene actions for the browser to run in order |
-| `walkthrough` | Steps with narration and actions, for multi-step explanations |
-| `resolved_refs` | Which word matched which structure, shown on the selection chips |
-| `transcript` | The recognized text, for voice commands |
-| `clarification` | A question for the student, returned instead of everything else when a reference is ambiguous |
-
-The browser's action executor has one handler per action type and calls methods on the scene controller (`frontend/src/viewer/controller.ts`), taking an undo snapshot first.
+| `submit_plan`, `ask_student` | The plan and scope, or one question for the student before planning |
+| `submit_demonstration`, `submit_pulse`, `submit_damage_slider`, `submit_click_case`, `submit_multiple_choice` | One part |
+| `answer_student` | A chat answer, optionally with a new plan |
+| `decide_next` | Continue, or add a part aimed at the mistake |
+| `submit_summary` | What was solid and what was shaky |
 
 ### Who decides what
 
-| The LLM decides | The harness guarantees |
+| The agent decides | The harness guarantees |
 | --- | --- |
-| What the student is asking for | "This" and "there" are resolved before the LLM sees them |
-| Which tools to call, in what order | Every structure, view, path and section ID exists |
-| What to search the textbook for | Invalid tool calls go back to the LLM as errors |
-| Whether to highlight, isolate, animate or walk through | The loop stops after 8 rounds |
-| The wording of answers and narration | Actions reach the browser in the order they were called |
+| What to teach, in what order, and in which kind of part | Every structure, vessel piece and distance exists in the model |
+| What each statement says, and which source backs it | Every atlas or notes quote appears word for word in its source |
+| What to show, hide and highlight | What a part highlights can actually be seen from the camera's side; the view is settled by measuring the model |
+| The cases, questions, right answers and feedback | A question has one right answer, its wording doesn't give the answer away, and no option repeats another |
+| Whether to add a part after a wrong answer | Parts are added at most twice, never after an added part, and never after the last part |
+| The summary's wording | The summary's list of sources is collected by code, not by the agent |
+
+### Formats and storage
+
+- **Session format:** sessions use one format, `lumen.session/0.1`, shared by the backend's Pydantic models ([`session_schemas.py`](backend/app/session_schemas.py)) and the browser's types and check ([`format.ts`](frontend/src/session/format.ts)). It is described in [`docs/session_format.md`](docs/session_format.md), along with every endpoint.
+- **What is stored:** each session is saved to SQLite (`data/lumen.db`), so it survives a restart. That includes the request, the parts sent, every answer, the agent's plan, its token use, and timings for each Claude call.
+- **Notes:** the facts Claude reads from uploaded notes, and each page's text, are saved with the session so they can be searched. The PDF file itself is not kept.
+- **History:** the browser keeps a history of past sessions, so they can be reopened.
+
+### The model
+
+The heart is an extract of the Z-Anatomy atlas: 41 structures in 17 groups. The vessels have sampled centre lines, so the code can measure distances, branch points, routes and what a blockage cuts off. The model, structure list and centre lines are in [`assets/regions/heart/`](assets/regions/heart/).
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `backend/app/` | FastAPI app. `sessions.py` holds the routes and tutors, `agent.py` the agent, `agent_tools.py` the tool definitions, `session_check.py` and `measure.py` the checks and geometry, `articles.py` and `notes.py` the sources, `progress.py` the progress line, `store.py` the SQLite store |
+| `backend/tests/` | `pytest` tests. The agent is tested with a scripted LLM, so the tests make no API calls |
+| `frontend/src/` | React and Three.js app. `viewer/` holds the 3D scene, `session/` the session player, format, grading, stage and live backend client, and `ui/` the thread, structures panel and history rail |
+| `assets/` | The heart model, structure registry, centre lines, atlas articles, and sample sessions |
+| `docs/` | The session format, decisions log, developer setup, asset preparation, attribution, and test checklist |
+
+## Setup
+
+See [`docs/dev_setup.md`](docs/dev_setup.md). In short:
+
+```bash
+cd backend && python3 -m venv .venv && source .venv/bin/activate && python -m pip install -r requirements-dev.txt
+```
+
+```bash
+cd frontend && npm install
+```
+
+Run the backend on port 8000 and the frontend on port 5173 (the commands are in `docs/dev_setup.md`). By default, sessions come from the free sample. To have Claude build them, set `ANTHROPIC_API_KEY` and `SESSION_SOURCE=agent` in the repo-root `.env`. Every session then costs API credit.
+
+Tests:
+
+```bash
+cd backend && .venv/bin/python -m pytest -q
+```
+
+```bash
+cd frontend && npx vitest run && npx tsc -b --noEmit
+```
 
 ## Tech stack
 
 | Layer | Choice |
 | --- | --- |
-| Frontend | Vite, TypeScript, React, Three.js |
-| Backend | Python 3.11+, FastAPI, Pydantic |
-| LLM | Anthropic Claude with tool use |
-| Speech-to-text | Whisper with word-level timestamps |
-| Retrieval | `sentence-transformers` embeddings, FAISS |
+| Frontend | Vite, TypeScript, React 19, Three.js, Vitest |
+| Backend | Python 3.11+, FastAPI, Pydantic v2 |
+| Agent | Anthropic Claude with tool use (`anthropic` SDK) |
+| Geometry | `trimesh`, `rtree`, `numpy`, for visibility and measurements on the model |
+| Sources | Z-Anatomy atlas articles (word search), and student notes read with `pypdf` |
 | Storage | SQLite |
-| External agents | MCP Python SDK |
-| Testing | `pytest`, Playwright |
+| Testing | `pytest` with a scripted LLM, Vitest |
 
-## Setup
+## Evaluation (planned)
 
-See [`docs/dev_setup.md`](docs/dev_setup.md).
+The agent will be evaluated on four questions, using a fixed set of about 20 requests and simulated students that answer in set patterns (always right, wrong then right, always wrong):
 
-## Evaluation
+- **Correct:** does each statement say only what its source says (an LLM judge, checked against hand labels)? Code can check the spatial facts against the model.
+- **On topic:** does the plan cover the request, and does it say honestly what the model can't show?
+- **Adaptive:** are parts added only after mistakes, and do they address the actual mistake? Do the summary and the follow-up session match what went wrong?
+- **Reliable and cheap:** how often are parts accepted on the first try, what are the rejection reasons, how long until the first part, and what does a session cost in tokens and dollars?
 
-The main question is whether clicking plus language beats language alone, especially for small, hard-to-name structures. Planned evaluations cover reference resolution, command understanding, filtered versus text-only retrieval, answer and citation accuracy, a screenshot baseline against a general vision model, and a small user pilot.
+An ablation runs the same requests through Claude without the lookup tools or the checks, then measures how many of its parts fail the checks. This shows what the harness contributes. A small pilot with classmates (a quiz before and after, plus a usability questionnaire) is optional.
+
+## Next steps
+
+1. **Usability:**
+   - mark added parts with the reason they were added;
+   - source chips that preview their quote;
+   - a start screen with examples;
+   - a colour key;
+   - make chat easier to find;
+   - accessibility.
+2. **Speed:** shorten the wait for the first part, which is about a minute today (planning, then building part 1).
+3. **Evaluation:** the runner and simulated students, the metrics, the ablation, then the judges.
+4. **Demo:** a scripted run for Dec 10, a recorded backup session, and slides with the numbers above.
+5. **Later:**
+   - cross-sections (a fixed set of named cuts first);
+   - searching notes by meaning for long notes, and quizzes in a course's own exam format;
+   - extending beyond the heart to other regions of the body.
+
+Design choices and their reasons are logged in [`docs/decisions.md`](docs/decisions.md).
 
 ## Team
 
@@ -137,7 +202,7 @@ The main question is whether clicking plus language beats language alone, especi
 
 ## Attribution
 
-- **3D models:** Z-Anatomy, derived from BodyParts3D (CC BY-SA 4.0, license to be verified at download).
-- **Text:** OpenStax *Anatomy and Physiology 2e* (CC BY 4.0).
+- **3D model:** Z-Anatomy, derived from BodyParts3D (CC BY-SA 4.0). Details are in [`docs/attribution.md`](docs/attribution.md).
+- **Text:** Z-Anatomy's description articles. Most are extracts of English Wikipedia (CC BY-SA 4.0), and the app shows each one's source link.
 
 Lumen is an educational prototype. It does not give medical advice.
